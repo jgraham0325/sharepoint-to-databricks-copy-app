@@ -1,0 +1,59 @@
+import { apiFetch } from "./client";
+
+export interface FileTransferItem {
+  drive_id: string;
+  item_id: string;
+  name: string;
+  size: number;
+}
+
+export interface FolderTransferItem {
+  drive_id: string;
+  folder_item_id: string;
+  folder_name: string;
+}
+
+export interface TransferRequest {
+  files: FileTransferItem[];
+  catalog: string;
+  schema_name: string;
+  volume: string;
+  subfolder: string;
+  folders?: FolderTransferItem[];
+}
+
+export type TransferStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "failed";
+
+export interface FileResult {
+  name: string;
+  status: TransferStatus;
+  error: string | null;
+}
+
+export interface TransferState {
+  transfer_id: string;
+  status: TransferStatus;
+  total: number;
+  completed: number;
+  failed: number;
+  results: FileResult[];
+  catalog?: string;
+  schema_name?: string;
+  volume?: string;
+  catalog_explorer_url?: string | null;
+}
+
+export function startTransfer(req: TransferRequest): Promise<TransferState> {
+  return apiFetch("/api/v1/transfer/start", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
+export function getTransferStatus(transferId: string): Promise<TransferState> {
+  return apiFetch(`/api/v1/transfer/status/${encodeURIComponent(transferId)}`);
+}

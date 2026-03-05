@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:docs.databricks.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:databricks-sdk-py.readthedocs.io)",
+      "WebFetch(domain:apps-cookbook.dev)"
+    ]
+  }
+}

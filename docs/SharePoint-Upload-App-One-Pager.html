@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SharePoint Upload App</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0f1419;
+      --surface: #1a2332;
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --before: #94a3b8;
+      --before-bg: rgba(148, 163, 184, 0.12);
+      --after: #22c55e;
+      --after-bg: rgba(34, 197, 94, 0.12);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      font-family: 'DM Sans', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      margin: 0;
+      min-height: 100vh;
+      padding: 2rem 1.5rem;
+    }
+
+    .page { max-width: 720px; margin: 0 auto; }
+
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin: 0 0 1.5rem;
+      letter-spacing: -0.02em;
+    }
+
+    p {
+      margin: 0 0 1rem;
+      font-size: 0.95rem;
+      color: var(--muted);
+    }
+
+    p strong { color: var(--text); font-weight: 600; }
+
+    ul {
+      margin: 0 0 1rem;
+      padding-left: 1.25rem;
+      font-size: 0.95rem;
+      color: var(--muted);
+    }
+    ul li { margin-bottom: 0.25rem; }
+    ul li:last-child { margin-bottom: 0; }
+
+    .diagram {
+      background: var(--surface);
+      border-radius: 10px;
+      padding: 1.5rem;
+      margin: 1.5rem 0;
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+
+    .flow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.4rem;
+      flex-wrap: wrap;
+      margin-bottom: 1.25rem;
+    }
+
+    .flow:last-child { margin-bottom: 0; }
+
+    .flow-before .node { font-size: 0.72rem; padding: 0.4rem 0.6rem; }
+
+    .flow-label {
+      font-size: 0.65rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 0.5rem;
+    }
+
+    .node {
+      padding: 0.5rem 0.85rem;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    .node-before {
+      background: var(--before-bg);
+      color: var(--before);
+    }
+
+    .node-after {
+      background: var(--after-bg);
+      color: var(--after);
+    }
+
+    .arrow { color: var(--muted); opacity: 0.6; }
+    .arrow-after { color: var(--after); opacity: 0.8; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>SharePoint Upload App</h1>
+
+    <p><strong>Problem:</strong></p>
+    <ul>
+      <li>Manual effort needed to get data from SharePoint to perform an audit</li>
+      <li>Data ends up on users’ laptops — security risk</li>
+      <li>Overly complex data movement is inefficient and prone to failures</li>
+    </ul>
+    <p><strong>Solution:</strong></p>
+    <ul>
+      <li>Simplify the process: transfer directly from SharePoint to a Databricks Volume</li>
+      <li>Provide a UI so users can do this easily</li>
+    </ul>
+
+    <div class="diagram">
+      <div class="flow-label">Before</div>
+      <div class="flow flow-before">
+        <span class="node node-before">SharePoint</span><span class="arrow">→</span>
+        <span class="node node-before">Download to laptop</span><span class="arrow">→</span>
+        <span class="node node-before">Angular app</span><span class="arrow">→</span>
+        <span class="node node-before">Public ADLS</span><span class="arrow">→</span>
+        <span class="node node-before">ADF</span><span class="arrow">→</span>
+        <span class="node node-before">Private ADLS</span><span class="arrow">→</span>
+        <span class="node node-before">Ext. volume</span><span class="arrow">→</span>
+        <span class="node node-before">Transform & analytics</span>
+      </div>
+      <div class="flow-label">After — all in existing app</div>
+      <div class="flow">
+        <span class="node node-after">SharePoint</span><span class="arrow arrow-after">→</span>
+        <span class="node node-after">Browse & copy</span><span class="arrow arrow-after">→</span>
+        <span class="node node-after">Volume</span><span class="arrow arrow-after">→</span>
+        <span class="node node-after">Transform & visualise</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

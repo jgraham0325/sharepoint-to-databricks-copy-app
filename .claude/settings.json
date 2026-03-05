@@ -1,0 +1,5 @@
+{
+  "enabledPlugins": {
+    "databricks-ai-dev-kit@fe-vibe": true
+  }
+}

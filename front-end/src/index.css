@@ -1,0 +1,42 @@
+/* Agent chat markdown styling */
+.agent-markdown {
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+.agent-markdown p:first-child {
+  margin-top: 0;
+}
+.agent-markdown p:last-child {
+  margin-bottom: 0;
+}
+.agent-markdown p + p {
+  margin-top: 0.5rem;
+}
+.agent-markdown strong {
+  font-weight: 600;
+}
+.agent-markdown ul,
+.agent-markdown ol {
+  margin: 0.25rem 0;
+  padding-left: 1.25rem;
+}
+.agent-markdown li + li {
+  margin-top: 0.15rem;
+}
+.agent-markdown code {
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0.15em 0.35em;
+  border-radius: 0.25rem;
+  font-size: 0.9em;
+}
+.agent-markdown pre {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem;
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 0.25rem;
+  overflow-x: auto;
+}
+.agent-markdown pre code {
+  padding: 0;
+  background: none;
+}

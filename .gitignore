@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node
+front-end/node_modules/
+front-end/dist/
+
+# React build output served by FastAPI
+back-end/static/*
+!back-end/static/.gitkeep
+
+# Environment
+.env
+back-end/.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,14 @@
+command:
+  - uvicorn
+  - app:app
+  - --host
+  - 0.0.0.0
+  - --port
+  - "8000"
+env:
+  - name: MS_CLIENT_ID
+    value_from: sharepoint-app-scope:ms-client-id
+  - name: MS_CLIENT_SECRET
+    value_from: sharepoint-app-scope:ms-client-secret
+  - name: MS_TENANT_ID
+    value_from: sharepoint-app-scope:ms-tenant-id
