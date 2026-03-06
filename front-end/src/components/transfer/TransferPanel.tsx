@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ProgressBar, ListGroup, Badge, Alert, Button } from "react-bootstrap";
-import type { TransferState } from "../../api/transfer";
+import type { TransferState, JobRunStatus } from "../../api/transfer";
 
 interface Props {
   state: TransferState | null;
@@ -17,6 +17,24 @@ function statusBadge(status: string) {
     default:
       return <Badge bg="secondary">Pending</Badge>;
   }
+}
+
+function JobRunStatusBadge({ status }: { status: "running" | "success" | "failed" }) {
+  switch (status) {
+    case "success":
+      return <Badge bg="success">Success</Badge>;
+    case "failed":
+      return <Badge bg="danger">Failed</Badge>;
+    default:
+      return <Badge bg="primary">Running</Badge>;
+  }
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
 }
 
 /** Dummy transform & analyse for demo: simulates a short processing step. */
@@ -54,7 +72,17 @@ export default function TransferPanel({ state }: Props) {
     <div className="mt-3">
       <div className="d-flex justify-content-between align-items-center mb-2">
         <h6 className="mb-0">Transfer Progress</h6>
-        {statusBadge(state.status)}
+        <div className="d-flex align-items-center gap-2">
+          {transferFinished &&
+            state.duration_seconds != null &&
+            state.duration_seconds !== undefined && (
+              <span className="text-muted small">
+                <i className="bi bi-clock me-1"></i>
+                {formatDuration(state.duration_seconds)}
+              </span>
+            )}
+          {statusBadge(state.status)}
+        </div>
       </div>
 
       <ProgressBar
@@ -134,6 +162,46 @@ export default function TransferPanel({ state }: Props) {
             </a>
           </Alert>
         )}
+
+      {(state.job_run_statuses?.length ?? 0) > 0 && (
+        <Alert variant="light" className="mt-3 py-2">
+          <i className="bi bi-diagram-3 me-2"></i>
+          <strong className="me-2">Databricks job runs:</strong>
+          <ListGroup variant="flush" className="mt-2">
+            {state.job_run_statuses!.map((job: JobRunStatus, i: number) => (
+              <ListGroup.Item
+                key={job.run_id}
+                className="d-flex justify-content-between align-items-center px-0 py-1 border-0"
+              >
+                <span className="d-flex align-items-center gap-2 flex-wrap">
+                  <JobRunStatusBadge status={job.status} />
+                  <span className="small text-muted">
+                    Run {i + 1}
+                    {job.file_names.length > 0 && (
+                      <span className="ms-1">
+                        ({job.file_names.length} file{job.file_names.length !== 1 ? "s" : ""})
+                      </span>
+                    )}
+                  </span>
+                  {job.error && (
+                    <small className="text-danger">{job.error}</small>
+                  )}
+                </span>
+                {job.url && (
+                  <a
+                    href={job.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="alert-link small"
+                  >
+                    Open in Databricks
+                  </a>
+                )}
+              </ListGroup.Item>
+            ))}
+          </ListGroup>
+        </Alert>
+      )}
     </div>
   );
 }

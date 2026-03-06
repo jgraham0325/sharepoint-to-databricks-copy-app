@@ -1,5 +1,5 @@
-import { Container, Row, Col, Breadcrumb, Card } from "react-bootstrap";
-import { Link, useNavigate } from "react-router-dom";
+import { Container, Row, Col, Breadcrumb, Card, Button } from "react-bootstrap";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import LoginButton from "../components/auth/LoginButton";
 import SiteSearch from "../components/sharepoint/SiteSearch";
@@ -13,20 +13,16 @@ export default function BrowsePage() {
   const navigate = useNavigate();
   const browser = useSharePointBrowser();
 
-  return (
-    <Container className="py-4">
-      <div className="d-flex justify-content-between align-items-center mb-4">
-        <h4 className="mb-0">SharePoint File Browser</h4>
-        <div className="d-flex align-items-center gap-2">
-          <Link to="/agent" className="btn btn-outline-primary btn-sm">
-            <i className="bi bi-robot me-1"></i>Agent
-          </Link>
-          <LoginButton />
-        </div>
-      </div>
+  const hasSelection =
+    browser.selectedFiles.length > 0 || browser.selectedFolders.length > 0;
+  const transferLabel = hasSelection
+    ? `Transfer${browser.selectedFiles.length > 0 ? ` ${browser.selectedFiles.length} file(s)` : ""}${browser.selectedFiles.length > 0 && browser.selectedFolders.length > 0 ? " +" : ""}${browser.selectedFolders.length > 0 ? ` ${browser.selectedFolders.length} folder(s)` : ""}`
+    : "Transfer";
 
+  return (
+    <Container className="page-content">
       {!isAuthenticated ? (
-        <Card body className="text-center py-5">
+        <Card body className="card-empty-state">
           <i
             className="bi bi-shield-lock"
             style={{ fontSize: "3rem" }}
@@ -37,9 +33,13 @@ export default function BrowsePage() {
           <LoginButton />
         </Card>
       ) : (
-        <Row>
-          <Col md={8}>
-            {browser.breadcrumbs.length > 0 && (
+        <>
+          <h2 className="mb-4" style={{ fontSize: "1.35rem", fontWeight: 600 }}>
+            File browser
+          </h2>
+          <Row>
+            <Col md={8}>
+              {browser.breadcrumbs.length > 0 && (
               <Breadcrumb className="mb-3">
                 <Breadcrumb.Item
                   onClick={() => browser.doSearchSites("")}
@@ -94,16 +94,10 @@ export default function BrowsePage() {
           </Col>
 
           <Col md={4}>
-            <FileSelectionList
-              selectedFiles={browser.selectedFiles}
-              selectedFolders={browser.selectedFolders}
-              onRemoveFile={browser.toggleFileSelection}
-              onRemoveFolder={browser.toggleFolderSelection}
-              onClear={browser.clearSelection}
-            />
-            {(browser.selectedFiles.length > 0 || browser.selectedFolders.length > 0) && (
-              <button
-                className="btn btn-success w-100 mt-3"
+            {hasSelection && (
+              <Button
+                variant="success"
+                className="w-100 mb-3"
                 onClick={() =>
                   navigate("/transfer", {
                     state: {
@@ -115,18 +109,19 @@ export default function BrowsePage() {
                 }
               >
                 <i className="bi bi-cloud-upload me-2"></i>
-                Transfer{" "}
-                {browser.selectedFiles.length > 0 &&
-                  `${browser.selectedFiles.length} file(s)`}
-                {browser.selectedFiles.length > 0 &&
-                  browser.selectedFolders.length > 0 &&
-                  " + "}
-                {browser.selectedFolders.length > 0 &&
-                  `${browser.selectedFolders.length} folder(s)`}
-              </button>
+                {transferLabel}
+              </Button>
             )}
+            <FileSelectionList
+              selectedFiles={browser.selectedFiles}
+              selectedFolders={browser.selectedFolders}
+              onRemoveFile={browser.toggleFileSelection}
+              onRemoveFolder={browser.toggleFolderSelection}
+              onClear={browser.clearSelection}
+            />
           </Col>
-        </Row>
+          </Row>
+        </>
       )}
     </Container>
   );

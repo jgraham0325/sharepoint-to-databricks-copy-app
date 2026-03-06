@@ -13,3 +13,8 @@ class TokenResponse(BaseModel):
 
 class RefreshRequest(BaseModel):
     refresh_token: str
+
+
+class MeResponse(BaseModel):
+    display_name: str
+    user_principal_name: str

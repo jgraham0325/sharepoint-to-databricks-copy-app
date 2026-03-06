@@ -190,19 +190,31 @@ export function useSharePointBrowser() {
   }, []);
 
   const selectAllInCurrentFolder = useCallback(() => {
+    const fileItems = items.filter((i) => !i.is_folder);
+    const folderItems = items.filter((i) => i.is_folder);
     setSelectedFiles((prev) => {
-      const fileItems = items.filter((i) => !i.is_folder);
       const existingIds = new Set(prev.map((f) => f.id));
       const toAdd = fileItems.filter((f) => !existingIds.has(f.id));
+      return [...prev, ...toAdd];
+    });
+    setSelectedFolders((prev) => {
+      const existingIds = new Set(prev.map((f) => f.id));
+      const toAdd = folderItems.filter((f) => !existingIds.has(f.id));
       return [...prev, ...toAdd];
     });
   }, [items]);
 
   const deselectAllInCurrentFolder = useCallback(() => {
-    setSelectedFiles((prev) => {
-      const currentIds = new Set(items.filter((i) => !i.is_folder).map((i) => i.id));
-      return prev.filter((f) => !currentIds.has(f.id));
-    });
+    const currentFileIds = new Set(
+      items.filter((i) => !i.is_folder).map((i) => i.id)
+    );
+    const currentFolderIds = new Set(
+      items.filter((i) => i.is_folder).map((i) => i.id)
+    );
+    setSelectedFiles((prev) => prev.filter((f) => !currentFileIds.has(f.id)));
+    setSelectedFolders((prev) =>
+      prev.filter((f) => !currentFolderIds.has(f.id))
+    );
   }, [items]);
 
   return {

@@ -24,3 +24,8 @@ back-end/.env
 # OS
 .DS_Store
 Thumbs.db
+
+# Large test files
+*.bin
+test_5gb.bin
+test_2.1gb.bin

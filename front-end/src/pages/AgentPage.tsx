@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect } from "react";
 import { Container, Card, Form, Button } from "react-bootstrap";
-import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useAuth } from "../context/AuthContext";
@@ -40,30 +39,21 @@ export default function AgentPage() {
   };
 
   return (
-    <Container className="py-4">
-      <div className="d-flex justify-content-between align-items-center mb-4">
-        <h4 className="mb-0">SharePoint → Volume Agent</h4>
-        <div className="d-flex align-items-center gap-2">
-          <Link to="/" className="btn btn-outline-secondary btn-sm">
-            Browse
-          </Link>
-          <Link to="/transfer" className="btn btn-outline-secondary btn-sm">
-            Transfer
-          </Link>
-          <LoginButton />
-        </div>
-      </div>
-
+    <Container className="page-content">
       {!isAuthenticated ? (
-        <Card body className="text-center py-5">
+        <Card body className="card-empty-state">
           <i className="bi bi-robot" style={{ fontSize: "3rem" }}></i>
-          <p className="mt-3">
+          <p className="mt-3 mb-0" style={{ color: "var(--color-text-muted)", maxWidth: "28rem", marginLeft: "auto", marginRight: "auto" }}>
             Sign in with Microsoft to use the agent. You can ask it to copy folders from SharePoint into a Databricks volume.
           </p>
           <LoginButton />
         </Card>
       ) : (
-        <Card body className="p-0 overflow-hidden">
+        <>
+          <h2 className="mb-4" style={{ fontSize: "1.35rem", fontWeight: 600 }}>
+            SharePoint → Volume Agent
+          </h2>
+          <Card body className="card-chat p-0 overflow-hidden">
           <div
             className="p-3 overflow-auto"
             style={{ minHeight: "320px", maxHeight: "60vh" }}
@@ -131,6 +121,7 @@ export default function AgentPage() {
             </Form>
           </div>
         </Card>
+        </>
       )}
     </Container>
   );

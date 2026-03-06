@@ -16,6 +16,12 @@ DATABRICKS_CHAT_MODEL: str = os.environ.get(
 
 APP_URL: str = os.environ.get("APP_URL", "http://localhost:8000")
 
+# Files larger than this (bytes) are transferred by a Databricks job instead of the app server (avoids memory/disk)
+LARGE_FILE_THRESHOLD_BYTES: int = int(os.environ.get("LARGE_FILE_THRESHOLD_BYTES", "104857600"))  # 100 MiB default
+# Optional: job ID of the sharepoint-transfer job (from bundle). If unset, resolved by job name.
+_raw = os.environ.get("SHAREPOINT_TRANSFER_JOB_ID", "")
+SHAREPOINT_TRANSFER_JOB_ID: int = int(_raw) if _raw.isdigit() else 0
+
 MS_AUTHORITY = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
 MS_SCOPES = ["https://graph.microsoft.com/.default"]
 MS_REDIRECT_PATH = "/api/v1/auth/callback"

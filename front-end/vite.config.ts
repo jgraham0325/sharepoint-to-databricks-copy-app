@@ -9,6 +9,8 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // Use polling if changes don't trigger HMR (e.g. some network drives / editors)
+    watch: { usePolling: true },
     proxy: {
       "/api": {
         target: "http://localhost:8000",

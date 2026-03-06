@@ -45,17 +45,23 @@ export default function FileBrowser({
     selectedFolders.some((f) => f.id === item.id);
 
   const fileItems = items.filter((i) => !i.is_folder);
-  const allSelected =
-    fileItems.length > 0 &&
+  const folderItems = items.filter((i) => i.is_folder);
+  const allFilesSelected =
+    fileItems.length === 0 ||
     fileItems.every((item) => selectedFiles.some((f) => f.id === item.id));
+  const allFoldersSelected =
+    folderItems.length === 0 ||
+    folderItems.every((item) => selectedFolders.some((f) => f.id === item.id));
+  const allSelected = allFilesSelected && allFoldersSelected;
+  const hasItems = fileItems.length > 0 || folderItems.length > 0;
 
   return (
     <>
-      {fileItems.length > 0 && onSelectAll && onDeselectAll && (
+      {hasItems && onSelectAll && onDeselectAll && (
         <div className="d-flex align-items-center mb-2">
           <Form.Check
             type="checkbox"
-            id="select-all-files"
+            id="select-all"
             label="Select all"
             checked={allSelected}
             onChange={() => (allSelected ? onDeselectAll() : onSelectAll())}

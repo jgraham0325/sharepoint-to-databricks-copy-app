@@ -21,7 +21,7 @@ def get_login_url(redirect_uri: str, state: str = "") -> dict:
     """Return the Microsoft authorization URL + state for the OAuth2 code flow."""
     app = _build_msal_app()
     flow = app.initiate_auth_code_flow(
-        scopes=["Sites.Read.All", "Sites.FullControl.All", "Files.Read.All", "Group.Read.All", "Team.ReadBasic.All"],
+        scopes=["User.Read", "Sites.Read.All", "Sites.FullControl.All", "Files.Read.All", "Group.Read.All", "Team.ReadBasic.All"],
         redirect_uri=redirect_uri,
         state=state,
     )
@@ -43,7 +43,7 @@ def refresh_access_token(refresh_token: str) -> dict:
     app = _build_msal_app()
     result = app.acquire_token_by_refresh_token(
         refresh_token,
-        scopes=["Sites.Read.All", "Sites.FullControl.All", "Files.Read.All", "Group.Read.All", "Team.ReadBasic.All"],
+        scopes=["User.Read", "Sites.Read.All", "Sites.FullControl.All", "Files.Read.All", "Group.Read.All", "Team.ReadBasic.All"],
     )
     if "error" in result:
         logger.error("Token refresh failed: %s", result.get("error_description"))
@@ -80,7 +80,7 @@ async def graph_get(path: str, token: str, params: Optional[dict] = None) -> dic
 
 
 async def graph_download(url: str, token: str) -> bytes:
-    """Download file content from a Graph download URL."""
+    """Download file content from a Graph download URL (loads full response into memory)."""
     async with httpx.AsyncClient(follow_redirects=True) as client:
         resp = await client.get(
             url,
@@ -89,3 +89,29 @@ async def graph_download(url: str, token: str) -> bytes:
         )
         resp.raise_for_status()
         return resp.content
+
+
+async def graph_download_to_path(
+    url: str,
+    token: str,
+    path: str,
+    *,
+    chunk_size: int = 8 * 1024 * 1024,
+) -> int:
+    """Stream download from a Graph download URL to a local file. Returns total bytes written.
+    Uses bounded memory (chunk_size buffer) so large files do not exhaust server memory.
+    """
+    written = 0
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        async with client.stream(
+            "GET",
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=300.0,
+        ) as resp:
+            resp.raise_for_status()
+            with open(path, "wb") as f:
+                async for chunk in resp.aiter_bytes(chunk_size=chunk_size):
+                    f.write(chunk)
+                    written += len(chunk)
+    return written

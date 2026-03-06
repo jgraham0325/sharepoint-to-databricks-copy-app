@@ -1,6 +1,7 @@
 from typing import List
 
 import io
+import os
 from databricks.sdk import WorkspaceClient
 
 from common.logger import get_logger
@@ -20,6 +21,23 @@ def upload_to_volume(
     full_path = f"/Volumes/{catalog}/{schema}/{volume}/{file_path}"
     logger.info("Uploading %s (%d bytes)", full_path, len(data))
     client.files.upload(full_path, io.BytesIO(data), overwrite=True)
+    return full_path
+
+
+def upload_to_volume_from_file(
+    client: WorkspaceClient,
+    catalog: str,
+    schema: str,
+    volume: str,
+    file_path: str,
+    source_path: str,
+) -> str:
+    """Upload a local file to a Unity Catalog Volume by path. Streams from disk (bounded memory)."""
+    full_path = f"/Volumes/{catalog}/{schema}/{volume}/{file_path}"
+    size = os.path.getsize(source_path)
+    logger.info("Uploading %s from %s (%d bytes)", full_path, source_path, size)
+    with open(source_path, "rb") as f:
+        client.files.upload(full_path, f, overwrite=True)
     return full_path
 
 

@@ -1,0 +1,17 @@
+---
+description: After changing a notebook, redeploy the Databricks bundle so the job uses the updated code.
+globs: notebooks/**/*
+alwaysApply: false
+---
+
+# Redeploy bundle after notebook changes
+
+When you edit any file under `notebooks/` (e.g. `sharepoint_transfer.py`), **redeploy the Databricks Asset Bundle** so the `sharepoint-transfer` job runs the updated code.
+
+Run from the project root:
+
+```bash
+databricks bundle deploy
+```
+
+Use the default target (dev) unless the user specifies another. This ensures the job definition and notebook code on the workspace stay in sync with the repo.

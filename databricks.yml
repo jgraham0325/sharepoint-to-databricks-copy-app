@@ -1,14 +1,35 @@
 bundle:
   name: sharepoint-upload-app
 
+sync:
+  exclude:
+    - "*.bin"
+
 targets:
   dev:
     mode: development
     default: true
     workspace:
-      host: ${DATABRICKS_HOST}
+      profile: ps
 
 resources:
+  jobs:
+    sharepoint-transfer:
+      name: sharepoint-transfer
+      description: "Transfer large files from SharePoint to UC volumes (offloaded from app server)"
+      environments:
+        - environment_key: default
+          spec:
+            client: "1"
+            dependencies:
+              - requests
+      tasks:
+        - task_key: transfer
+          environment_key: default
+          spark_python_task:
+            python_file: ./notebooks/sharepoint_transfer.py
+            parameters: []
+
   apps:
     sharepoint-upload-app:
       name: sharepoint-upload-app

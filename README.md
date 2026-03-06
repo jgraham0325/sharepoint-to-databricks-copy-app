@@ -8,6 +8,7 @@ A Databricks App that lets users browse a SharePoint site, select files, and cop
 - Node.js 18+
 - A Databricks workspace (Azure) with Unity Catalog enabled
 - A Microsoft Entra ID (Azure AD) app registration with the following API permissions:
+  - `User.Read` - Read signed-in user profile (used to show “Logged in as …” and to persist session)
   - `Sites.Read.All` - Read SharePoint sites
   - `Files.Read.All` - Read files from SharePoint
   - `Group.Read.All` - Read group information (needed for Team sites)
@@ -21,6 +22,7 @@ A Databricks App that lets users browse a SharePoint site, select files, and cop
    - For Databricks: `https://<your-app-url>/api/v1/auth/callback`
 3. Under **Certificates & secrets**, create a new client secret. Copy the value.
 4. Under **API permissions**, add `Microsoft Graph > Delegated permissions`:
+   - `User.Read`
    - `Sites.Read.All`
    - `Files.Read.All`
    - `Group.Read.All`
@@ -94,7 +96,9 @@ cd front-end
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173). The Vite dev server proxies `/api` requests to the backend on port 8000.
+Open [http://localhost:5173](http://localhost:5173). **Use this URL (not 8000) so frontend changes reload automatically.** The Vite dev server proxies `/api` requests to the backend on port 8000.
+
+**Auth redirect:** Keep your Microsoft redirect URI as `http://localhost:8000/api/v1/auth/callback`. The app sends that URL to Microsoft, so the OAuth popup lands on the backend. After sign-in, the callback page posts the token to the opener (your tab on 5173), so you stay on the Vite app. No second redirect URI is required.
 
 ## Deploying to Databricks
 
@@ -140,17 +144,40 @@ env:
 
 ### 4. Deploy with Databricks Asset Bundles
 
+Set your workspace URL (required by the bundle), then deploy:
+
 ```bash
+export DATABRICKS_HOST=https://<your-workspace>.azuredatabricks.net
 databricks bundle deploy -t dev
 ```
 
+Replace `<your-workspace>` with your workspace hostname (e.g. `adb-1234567890123456.7`). You must be authenticated (e.g. `databricks auth login` or a token in `~/.databrickscfg`).
+
 After deployment, open your Databricks workspace, navigate to **Compute > Apps**, and find `sharepoint-upload-app` to see its URL and status.
+
+The bundle also deploys a job named **sharepoint-transfer** (see `databricks.yml`). It runs on **serverless compute** and is used to offload large file transfers so the app server does not hold 10GB+ in memory. See [Large file handling](#large-file-handling) below.
+
+## Large file handling
+
+To avoid running out of memory on the app server when copying very large files (e.g. 10GB):
+
+- **Files under the threshold** (default 100 MiB): The server streams each file from SharePoint to a temp file in 8 MiB chunks, then uploads to the volume. Memory use is bounded; temp disk is used on the server.
+- **Files at or above the threshold** (or size unknown): The server does not download the file. Instead it starts a **Databricks job run** per file. The job runs the script in `notebooks/sharepoint_transfer.py` on a cluster: it streams the file from SharePoint to the cluster’s local disk, then uploads to the volume. The app server only fetches download URLs and submits runs; it polls run status until all are done.
+
+Configure:
+
+- **`LARGE_FILE_THRESHOLD_BYTES`** (default `104857600` = 100 MiB): Files with size ≥ this are offloaded to the job.
+- **`SHAREPOINT_TRANSFER_JOB_ID`** (optional): Job ID of the `sharepoint-transfer` job. If unset, the app looks up the job by name after deployment.
+
+Ensure the `sharepoint-transfer` job is deployed (it is defined in `databricks.yml`) and that the job’s cluster has network access to Microsoft Graph and to your workspace (for volume uploads). **If selecting large files does not trigger the job** and you see an error like "Databricks job 'sharepoint-transfer' not found", run `databricks bundle deploy -t dev` so the job is created, or set `SHAREPOINT_TRANSFER_JOB_ID` in the app environment to the job ID from **Workflows > Jobs** in the workspace.
 
 ## Project Structure
 
 ```
 sharepoint-upload-app/
-├── databricks.yml              # DAB deployment config
+├── databricks.yml              # DAB deployment config (app + sharepoint-transfer job)
+├── notebooks/
+│   └── sharepoint_transfer.py  # Job script: stream SharePoint → volume (large files)
 ├── back-end/
 │   ├── app.py                  # FastAPI entry point
 │   ├── app.yaml                # Databricks App runtime config

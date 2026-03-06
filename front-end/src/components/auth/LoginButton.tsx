@@ -2,13 +2,19 @@ import { Button } from "react-bootstrap";
 import { useAuth } from "../../context/AuthContext";
 
 export default function LoginButton() {
-  const { isAuthenticated, login, logout } = useAuth();
+  const { isAuthenticated, user, login, logout } = useAuth();
 
   if (isAuthenticated) {
     return (
-      <Button variant="outline-secondary" size="sm" onClick={logout}>
-        <i className="bi bi-box-arrow-right me-1"></i>Sign out of Microsoft
-      </Button>
+      <div className="d-flex align-items-center gap-2">
+        <span className="text-muted small" title={user?.userPrincipalName ?? undefined}>
+          <i className="bi bi-person-circle me-1"></i>
+          Logged in as <strong>{user?.displayName ?? "…"}</strong>
+        </span>
+        <Button variant="outline-secondary" onClick={logout}>
+          <i className="bi bi-box-arrow-right me-1"></i>Sign out
+        </Button>
+      </div>
     );
   }
 
