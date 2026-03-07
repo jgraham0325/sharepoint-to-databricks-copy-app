@@ -1,4 +1,5 @@
 """Resolve and run the SharePoint transfer job on Databricks for large files (multiple files per run)."""
+import json
 from typing import List, Optional, Tuple
 
 from databricks.sdk import WorkspaceClient
@@ -10,11 +11,6 @@ from common.logger import get_logger
 logger = get_logger(__name__)
 
 TRANSFER_JOB_NAME = "sharepoint-transfer"
-
-# Number of files per job run (batch size); each file is transferred in full.
-# Keep small: SharePoint download URLs are long (1–3 KB+); many in one run can exceed
-# job parameter/argv limits. 4 files per run is a safe limit.
-TRANSFER_BATCH_SIZE = 4
 
 
 def _get_transfer_job_id(client: WorkspaceClient) -> Optional[int]:
@@ -30,51 +26,71 @@ def get_transfer_job_id() -> Optional[int]:
     return config.SHAREPOINT_TRANSFER_JOB_ID or _get_transfer_job_id(client)
 
 
-def submit_transfer_batch(
-    token: str,
-    url_path_pairs: List[Tuple[str, str]],
-    task_label: str = "transfer",
-) -> Optional[int]:
-    """
-    Submit one job run for a batch of files (legacy: argv url/path pairs).
-    Use submit_transfer_via_manifest for large batches instead.
-    """
-    if not url_path_pairs:
-        return None
-    client = get_workspace_client()
-    job_id = get_transfer_job_id()
-    if not job_id:
-        logger.warning("No sharepoint-transfer job found; deploy the bundle job or set SHAREPOINT_TRANSFER_JOB_ID")
-        return None
-    flat: List[str] = [token]
-    for url, path in url_path_pairs:
-        flat.append(url)
-        flat.append(path)
-    response = client.jobs.run_now(job_id=job_id, python_params=flat)
-    run_id = response.run_id if response else None
-    if run_id:
-        logger.info("Submitted transfer run_id=%s for batch of %d file(s) (%s)", run_id, len(url_path_pairs), task_label)
-    return run_id
+def _tokens_secret_key(user_oid: str) -> str:
+    """Secret key for per-user tokens (GUID with dashes replaced by underscores)."""
+    return "tokens_" + user_oid.replace("-", "_")
+
+
+def _write_user_tokens(
+    scope: str,
+    user_oid: str,
+    access_token: str,
+    refresh_token: Optional[str] = None,
+) -> str:
+    """Write access_token and optional refresh_token to the secret scope. Returns the secret key used."""
+    key = _tokens_secret_key(user_oid)
+    payload = {"access_token": access_token}
+    if refresh_token:
+        payload["refresh_token"] = refresh_token
+    get_workspace_client().secrets.put_secret(
+        scope=scope,
+        key=key,
+        string_value=json.dumps(payload),
+    )
+    return key
+
+
+def delete_user_tokens(user_oid: str) -> None:
+    """Delete the per-user tokens secret for the given user (e.g. on logout). No-op if scope not configured."""
+    if not config.SHAREPOINT_SECRET_SCOPE:
+        return
+    key = _tokens_secret_key(user_oid)
+    try:
+        get_workspace_client().secrets.delete_secret(scope=config.SHAREPOINT_SECRET_SCOPE, key=key)
+    except Exception as e:
+        logger.warning("Failed to delete user tokens secret key=%s: %s", key, e)
 
 
 def submit_transfer_via_manifest(
     token: str,
     manifest_volume_path: str,
     task_label: str = "manifest",
+    ms_refresh_token: Optional[str] = None,
+    user_oid: Optional[str] = None,
 ) -> Optional[int]:
     """
     Submit one job run that reads a manifest from a UC volume path and transfers all files listed.
-    python_params: [token, manifest_volume_path]. Does not wait for completion.
+    Tokens are written to the configured secret scope; job params are only [scope, tokens_key, manifest_path].
+    Requires SHAREPOINT_SECRET_SCOPE and user_oid (from Graph /me). Does not wait for completion.
     """
     if not manifest_volume_path or not token:
+        return None
+    if not config.SHAREPOINT_SECRET_SCOPE:
+        logger.error("SHAREPOINT_SECRET_SCOPE is not set; cannot submit transfer job")
+        return None
+    if not user_oid:
+        logger.error("user_oid is required for transfer job (resolve via get_me_id)")
         return None
     job_id = get_transfer_job_id()
     if not job_id:
         logger.warning("No sharepoint-transfer job found; deploy the bundle job or set SHAREPOINT_TRANSFER_JOB_ID")
         return None
+    scope = config.SHAREPOINT_SECRET_SCOPE
+    tokens_key = _write_user_tokens(scope, user_oid, token, ms_refresh_token)
+    python_params = [scope, tokens_key, manifest_volume_path]
     response = get_workspace_client().jobs.run_now(
         job_id=job_id,
-        python_params=[token, manifest_volume_path],
+        python_params=python_params,
     )
     run_id = response.run_id if response else None
     if run_id:

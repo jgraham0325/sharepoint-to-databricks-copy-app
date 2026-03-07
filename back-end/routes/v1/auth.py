@@ -11,8 +11,10 @@ from common.connectors.microsoft_graph import (
     get_login_url,
     exchange_code_for_token,
     refresh_access_token,
+    get_me_id,
     graph_get,
 )
+from services.job_service import delete_user_tokens
 from models.auth import LoginUrlResponse, TokenResponse, RefreshRequest, MeResponse
 
 router = APIRouter(prefix="/auth")
@@ -224,3 +226,16 @@ async def refresh(body: RefreshRequest):
         refresh_token=result.get("refresh_token", body.refresh_token),
         expires_in=result.get("expires_in", 3600),
     )
+
+
+@router.post("/logout")
+async def logout(x_ms_token: Optional[str] = Header(None, alias="X-MS-Token")):
+    """Remove the current user's tokens from the secret scope (if scope is configured and token is valid). Call on logout to avoid leaving refresh tokens in the scope."""
+    if not x_ms_token:
+        return {"ok": True}
+    try:
+        user_oid = await get_me_id(x_ms_token)
+        delete_user_tokens(user_oid)
+    except Exception:
+        pass
+    return {"ok": True}

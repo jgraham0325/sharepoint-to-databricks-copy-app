@@ -34,3 +34,8 @@ export function refreshToken(refresh_token: string): Promise<TokenResponse> {
 export function getMe(): Promise<MeResponse> {
   return apiFetch("/api/v1/auth/me");
 }
+
+/** Tell the backend to remove the user's tokens from the secret scope. Call before clearing local auth state. */
+export function logout(): Promise<void> {
+  return apiFetch("/api/v1/auth/logout", { method: "POST" });
+}

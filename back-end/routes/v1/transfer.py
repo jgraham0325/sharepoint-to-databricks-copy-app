@@ -21,7 +21,11 @@ def _require_token(x_ms_token: Optional[str]) -> str:
 
 
 @router.post("/start", response_model=TransferState)
-async def start(body: TransferRequest, x_ms_token: Optional[str] = Header(None)):
+async def start(
+    body: TransferRequest,
+    x_ms_token: Optional[str] = Header(None),
+    x_ms_refresh_token: Optional[str] = Header(None),
+):
     token = _require_token(x_ms_token)
     files = list(body.files)
     if body.folders:
@@ -34,12 +38,17 @@ async def start(body: TransferRequest, x_ms_token: Optional[str] = Header(None))
         volume=body.volume,
         subfolder=body.subfolder,
         ms_token=token,
+        ms_refresh_token=x_ms_refresh_token,
     )
     return state
 
 
 @router.post("/copy-folder", response_model=TransferState)
-async def copy_folder(body: FolderTransferRequest, x_ms_token: Optional[str] = Header(None)):
+async def copy_folder(
+    body: FolderTransferRequest,
+    x_ms_token: Optional[str] = Header(None),
+    x_ms_refresh_token: Optional[str] = Header(None),
+):
     """
     Copy an entire SharePoint folder (recursively) to a Unity Catalog volume.
     Agent-friendly: provide site drive + optional folder ID and destination volume; all files are copied automatically.
@@ -56,6 +65,7 @@ async def copy_folder(body: FolderTransferRequest, x_ms_token: Optional[str] = H
             volume=body.volume,
             subfolder=body.subfolder,
             ms_token=token,
+            ms_refresh_token=x_ms_refresh_token,
         )
     except httpx.HTTPStatusError as e:
         status_code = e.response.status_code if e.response else 502

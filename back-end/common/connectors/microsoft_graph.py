@@ -1,6 +1,7 @@
 from typing import List, Optional, Tuple
 
 import asyncio
+import random
 import msal
 import httpx
 
@@ -8,6 +9,10 @@ from common import config
 from common.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Retry on 429/503: respect Retry-After or exponential backoff with jitter
+_GRAPH_MAX_RETRIES = 8
+_GRAPH_RETRY_BACKOFF_CAP = 300
 
 
 def _build_msal_app() -> msal.ConfidentialClientApplication:
@@ -52,6 +57,15 @@ def refresh_access_token(refresh_token: str) -> dict:
     return result
 
 
+async def get_me_id(token: str) -> str:
+    """Return the current user's object ID (GUID) from Microsoft Graph. Used for per-user secret keys."""
+    data = await graph_get("/me?$select=id", token)
+    oid = data.get("id") if isinstance(data, dict) else None
+    if not oid or not isinstance(oid, str):
+        raise ValueError("No id in /me response")
+    return oid
+
+
 async def graph_get(path: str, token: str, params: Optional[dict] = None) -> dict:
     """Perform an authenticated GET against the Microsoft Graph API."""
     url = f"{config.MS_GRAPH_BASE}{path}"
@@ -63,31 +77,58 @@ async def graph_get_by_url(url: str, token: str, params: Optional[dict] = None) 
     return await _graph_get_url(url, token, params)
 
 
-async def _graph_get_url(url: str, token: str, params: Optional[dict] = None) -> dict:
-    """Internal: perform GET on the given URL with Bearer token."""
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            url,
-            headers={"Authorization": f"Bearer {token}"},
-            params=params,
-            timeout=30.0,
-        )
+def _retry_after_seconds(resp: httpx.Response, attempt: int) -> float:
+    """Delay in seconds: Retry-After header if present and valid, else exponential backoff with jitter."""
+    raw = resp.headers.get("Retry-After")
+    if raw:
         try:
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            error_detail = f"Microsoft Graph API error: {e.response.status_code}"
+            base = min(int(raw), _GRAPH_RETRY_BACKOFF_CAP)
+        except ValueError:
+            base = min(2 ** attempt, _GRAPH_RETRY_BACKOFF_CAP)
+    else:
+        base = min(2 ** attempt, _GRAPH_RETRY_BACKOFF_CAP)
+    return base * (0.5 + random.random())
+
+
+async def _graph_get_url(url: str, token: str, params: Optional[dict] = None) -> dict:
+    """Internal: perform GET on the given URL with Bearer token. Retries on 429/503 with Retry-After or backoff."""
+    async with httpx.AsyncClient() as client:
+        for attempt in range(_GRAPH_MAX_RETRIES):
+            resp = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+                params=params,
+                timeout=30.0,
+            )
+            if resp.status_code in (429, 503):
+                if attempt == _GRAPH_MAX_RETRIES - 1:
+                    pass  # fall through to raise below
+                else:
+                    delay = _retry_after_seconds(resp, attempt)
+                    logger.warning(
+                        "Graph 429/503 for URL (attempt %s/%s), retrying in %.1fs",
+                        attempt + 1,
+                        _GRAPH_MAX_RETRIES,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
             try:
-                error_body = e.response.json()
-                if "error" in error_body:
-                    error_msg = error_body["error"].get("message", "")
-                    error_detail = f"{error_detail} - {error_msg}"
-            except Exception:
-                pass
-            logger.error("%s for URL: %s", error_detail, url)
-            raise httpx.HTTPStatusError(
-                error_detail, request=e.request, response=e.response
-            ) from e
-        return resp.json()
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                error_detail = f"Microsoft Graph API error: {e.response.status_code}"
+                try:
+                    error_body = e.response.json()
+                    if "error" in error_body:
+                        error_msg = error_body["error"].get("message", "")
+                        error_detail = f"{error_detail} - {error_msg}"
+                except Exception:
+                    pass
+                logger.error("%s for URL: %s", error_detail, url)
+                raise httpx.HTTPStatusError(
+                    error_detail, request=e.request, response=e.response
+                ) from e
+            return resp.json()
 
 
 async def graph_get_all_pages(
@@ -107,7 +148,7 @@ async def graph_get_all_pages(
 async def graph_get_download_urls_concurrent(
     paths: List[str],
     token: str,
-    max_concurrent: int = 15,
+    max_concurrent: int = 6,
 ) -> List[Tuple[Optional[str], Optional[str]]]:
     """
     Resolve download URLs for multiple Graph item paths with bounded concurrency.

@@ -37,7 +37,7 @@ export interface FileResult {
 export interface JobRunStatus {
   run_id: number;
   url?: string | null;
-  status: "running" | "success" | "failed";
+  status: "queued" | "running" | "success" | "failed";
   file_names: string[];
   error?: string | null;
 }

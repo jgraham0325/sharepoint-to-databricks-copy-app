@@ -21,12 +21,16 @@ LARGE_FILE_THRESHOLD_BYTES: int = int(os.environ.get("LARGE_FILE_THRESHOLD_BYTES
 # If transfer has fewer than this many files and all are small, run on app server to avoid job startup time
 MAX_FILES_ON_SERVER: int = int(os.environ.get("MAX_FILES_ON_SERVER", "20"))
 # Files per manifest chunk when using the job (one job run per chunk)
-FILES_PER_MANIFEST_CHUNK: int = int(os.environ.get("FILES_PER_MANIFEST_CHUNK", "50"))
+FILES_PER_MANIFEST_CHUNK: int = int(os.environ.get("FILES_PER_MANIFEST_CHUNK", "200"))
 # Max result entries kept in memory and returned by GET transfer (avoids huge payloads)
 MAX_TRANSFER_RESULTS_IN_MEMORY: int = int(os.environ.get("MAX_TRANSFER_RESULTS_IN_MEMORY", "500"))
 # Optional: job ID of the sharepoint-transfer job (from bundle). If unset, resolved by job name.
 _raw = os.environ.get("SHAREPOINT_TRANSFER_JOB_ID", "")
 SHAREPOINT_TRANSFER_JOB_ID: int = int(_raw) if _raw.isdigit() else 0
+
+# Secret scope for transfer job: app credentials (ms-client-id, ms-client-secret, ms-tenant-id) and per-user tokens (tokens_{oid}).
+# Required for job-based transfer. Align with README (e.g. sharepoint-app-scope).
+SHAREPOINT_SECRET_SCOPE: str = os.environ.get("SHAREPOINT_SECRET_SCOPE", "sharepoint-app-scope")
 
 MS_AUTHORITY = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
 MS_SCOPES = ["https://graph.microsoft.com/.default"]

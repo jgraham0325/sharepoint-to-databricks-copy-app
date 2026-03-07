@@ -51,10 +51,10 @@ class FileResult(BaseModel):
 
 
 class JobRunStatus(BaseModel):
-    """Per-job-run status for UI: running, success, or failed."""
+    """Per-job-run status for UI: queued, running, success, or failed."""
     run_id: int
     url: Optional[str] = None
-    status: str  # "running" | "success" | "failed"
+    status: str  # "queued" | "running" | "success" | "failed"
     file_names: List[str] = []
     error: Optional[str] = None
 

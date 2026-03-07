@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { ProgressBar, ListGroup, Badge, Alert, Button } from "react-bootstrap";
-import type { TransferState, JobRunStatus } from "../../api/transfer";
+import type { TransferState, JobRunStatus, FileResult } from "../../api/transfer";
+
+const INITIAL_VISIBLE_FILES = 10;
 
 interface Props {
   state: TransferState | null;
@@ -19,21 +21,25 @@ function statusBadge(status: string) {
   }
 }
 
-function JobRunStatusBadge({ status }: { status: "running" | "success" | "failed" }) {
+function JobRunStatusBadge({ status }: { status: "queued" | "running" | "success" | "failed" }) {
   switch (status) {
     case "success":
       return <Badge bg="success">Success</Badge>;
     case "failed":
       return <Badge bg="danger">Failed</Badge>;
-    default:
+    case "queued":
+      return <Badge bg="secondary">Queued</Badge>;
+    case "running":
       return <Badge bg="primary">Running</Badge>;
+    default:
+      return <Badge bg="secondary">{status}</Badge>;
   }
 }
 
 function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  if (seconds < 60) return `${Math.floor(seconds)}s`;
   const m = Math.floor(seconds / 60);
-  const s = Math.round(seconds % 60);
+  const s = Math.floor(seconds % 60);
   return s > 0 ? `${m}m ${s}s` : `${m}m`;
 }
 
@@ -42,9 +48,59 @@ function runDummyTransformAndAnalyse(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 2200));
 }
 
+function FileResultRow({ r }: { r: FileResult }) {
+  const isError = r.status === "failed" || r.error;
+  return (
+    <ListGroup.Item
+      className={`d-flex justify-content-between align-items-center py-2 ${isError ? "list-group-item-danger" : ""}`}
+    >
+      <span>
+        <i
+          className={`bi ${r.status === "completed" ? "bi-check-circle text-success" : "bi-x-circle text-danger"} me-2`}
+        ></i>
+        {r.name}
+      </span>
+      {r.error && <small className="text-danger fw-medium">{r.error}</small>}
+    </ListGroup.Item>
+  );
+}
+
 export default function TransferPanel({ state }: Props) {
   const [isAnalysing, setIsAnalysing] = useState(false);
   const [analysisComplete, setAnalysisComplete] = useState(false);
+  const [resultsExpanded, setResultsExpanded] = useState(false);
+  const [failedExpanded, setFailedExpanded] = useState(false);
+  const [, setTick] = useState(0);
+  const startTimeRef = useRef<{ transferId: string; startTime: number } | null>(null);
+
+  const inProgress = state?.status === "in_progress";
+  useEffect(() => {
+    if (!inProgress || !state?.transfer_id) return;
+    if (startTimeRef.current?.transferId !== state.transfer_id) {
+      startTimeRef.current = { transferId: state.transfer_id, startTime: Date.now() };
+    }
+    const interval = setInterval(() => setTick((t) => t + 1), 200);
+    return () => clearInterval(interval);
+  }, [inProgress, state?.transfer_id]);
+
+  const { failedResults, successResults } = useMemo(() => {
+    const results = state?.results ?? [];
+    const failed = results.filter((r) => r.status === "failed" || r.error);
+    const success = results.filter((r) => r.status !== "failed" && !r.error);
+    return { failedResults: failed, successResults: success };
+  }, [state?.results]);
+
+  const visibleFailedCount = failedExpanded
+    ? failedResults.length
+    : Math.min(INITIAL_VISIBLE_FILES, failedResults.length);
+  const hiddenFailedCount = failedResults.length - visibleFailedCount;
+  const canExpandOrCollapseFailed = failedResults.length > INITIAL_VISIBLE_FILES;
+
+  const visibleSuccessCount = resultsExpanded
+    ? successResults.length
+    : Math.min(INITIAL_VISIBLE_FILES, successResults.length);
+  const hiddenSuccessCount = successResults.length - visibleSuccessCount;
+  const canExpandOrCollapse = successResults.length > INITIAL_VISIBLE_FILES;
 
   if (!state) return null;
 
@@ -56,6 +112,13 @@ export default function TransferPanel({ state }: Props) {
   const transferFinished =
     state.status === "completed" || state.status === "failed";
   const hasCompletedFiles = state.completed > 0;
+
+  const elapsedSeconds =
+    transferFinished && state.duration_seconds != null
+      ? state.duration_seconds
+      : inProgress && startTimeRef.current?.transferId === state.transfer_id
+        ? (Date.now() - startTimeRef.current.startTime) / 1000
+        : null;
 
   const handleTransformAndAnalyse = async () => {
     setIsAnalysing(true);
@@ -73,24 +136,27 @@ export default function TransferPanel({ state }: Props) {
       <div className="d-flex justify-content-between align-items-center mb-2">
         <h6 className="mb-0">Transfer Progress</h6>
         <div className="d-flex align-items-center gap-2">
-          {transferFinished &&
-            state.duration_seconds != null &&
-            state.duration_seconds !== undefined && (
-              <span className="text-muted small">
-                <i className="bi bi-clock me-1"></i>
-                {formatDuration(state.duration_seconds)}
-              </span>
-            )}
+          {elapsedSeconds != null && (
+            <span className="text-muted small">
+              <i className="bi bi-clock me-1"></i>
+              {formatDuration(elapsedSeconds)}
+            </span>
+          )}
           {statusBadge(state.status)}
         </div>
       </div>
 
-      <ProgressBar
-        now={pct}
-        label={`${pct}%`}
-        variant={state.failed > 0 ? "warning" : "primary"}
-        className="mb-3"
-      />
+      <div className="d-flex align-items-center gap-2 mb-3">
+        <ProgressBar
+          now={pct}
+          variant={state.failed > 0 ? "warning" : "primary"}
+          className="flex-grow-1"
+          style={{ minWidth: 0 }}
+        />
+        <span className="text-body-emphasis fw-medium" style={{ minWidth: "3rem" }}>
+          {pct}%
+        </span>
+      </div>
 
       {state.total > 0 && (
         <p className="text-muted small mb-2">
@@ -109,22 +175,60 @@ export default function TransferPanel({ state }: Props) {
 
       {state.results.length > 0 && (
         <>
-          <ListGroup className="mb-1">
-            {state.results.map((r, i) => (
-              <ListGroup.Item
-                key={i}
-                className="d-flex justify-content-between align-items-center py-2"
-              >
-                <span>
-                  <i
-                    className={`bi ${r.status === "completed" ? "bi-check-circle text-success" : "bi-x-circle text-danger"} me-2`}
-                  ></i>
-                  {r.name}
-                </span>
-                {r.error && <small className="text-danger">{r.error}</small>}
-              </ListGroup.Item>
-            ))}
-          </ListGroup>
+          {failedResults.length > 0 && (
+            <div className="mb-2">
+              <p className="text-danger small fw-medium mb-1">
+                <i className="bi bi-exclamation-triangle me-1"></i>
+                Failed ({failedResults.length})
+              </p>
+              <ListGroup className="mb-1">
+                {failedResults
+                  .slice(0, visibleFailedCount)
+                  .map((r, i) => (
+                    <FileResultRow key={`failed-${i}`} r={r} />
+                  ))}
+              </ListGroup>
+              {canExpandOrCollapseFailed && (
+                <Button
+                  variant="outline-danger"
+                  size="sm"
+                  className="mt-1"
+                  onClick={() => setFailedExpanded((e) => !e)}
+                >
+                  {failedExpanded
+                    ? "Show less"
+                    : `Show ${hiddenFailedCount} more`}
+                </Button>
+              )}
+            </div>
+          )}
+          {successResults.length > 0 && (
+            <div className="mb-1">
+              <p className="text-muted small mb-1">
+                {failedResults.length > 0 ? "Succeeded" : "Files"}{" "}
+                ({successResults.length})
+              </p>
+              <ListGroup className="mb-1">
+                {successResults
+                  .slice(0, visibleSuccessCount)
+                  .map((r, i) => (
+                    <FileResultRow key={`success-${i}`} r={r} />
+                  ))}
+              </ListGroup>
+              {canExpandOrCollapse && (
+                <Button
+                  variant="outline-secondary"
+                  size="sm"
+                  className="mt-1"
+                  onClick={() => setResultsExpanded((e) => !e)}
+                >
+                  {resultsExpanded
+                    ? "Show less"
+                    : `Show ${hiddenSuccessCount} more`}
+                </Button>
+              )}
+            </div>
+          )}
           {state.results_truncated && (
             <p className="text-muted small mb-0">
               Showing first {state.results.length} results; more files were transferred.

@@ -10,20 +10,23 @@ targets:
     mode: development
     default: true
     workspace:
-      profile: ps
+      host: https://adb-3737170459724564.4.azuredatabricks.net
 
 resources:
   jobs:
     sharepoint-transfer:
       name: sharepoint-transfer
       description: "Transfer large files from SharePoint to UC volumes (offloaded from app server)"
-      max_concurrent_runs: 20
+      max_concurrent_runs: 10
+      # Includes time in queue (Queued/Pending) + execution. Set high so batches aren't killed while waiting.
+      timeout_seconds: 10800
       environments:
         - environment_key: default
           spec:
-            client: "1"
+            environment_version: "4"
             dependencies:
               - requests
+              - msal
       tasks:
         - task_key: transfer
           environment_key: default
@@ -32,9 +35,9 @@ resources:
             parameters: []
 
   apps:
-    sharepoint-upload-app:
-      name: sharepoint-upload-app
-      description: "Browse SharePoint and copy files to a Databricks Unity Catalog Volume"
+    sharepoint-to-databricks-transfer:
+      name: sharepoint-databricks-transfer
+      description: "Transfer files from SharePoint to Databricks Unity Catalog Volumes"
       source_code_path: ./back-end
       config:
         command:

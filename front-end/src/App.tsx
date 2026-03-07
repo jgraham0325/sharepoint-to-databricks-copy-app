@@ -13,7 +13,7 @@ function AppBar() {
         <span className="app-bar__brand-icon" aria-hidden>
           <i className="bi bi-cloud-arrow-up-fill" style={{ fontSize: "0.9rem" }}></i>
         </span>
-        SharePoint Upload
+        SharePoint to Databricks Transfer
       </NavLink>
       <nav className="app-bar__nav">
         <NavLink

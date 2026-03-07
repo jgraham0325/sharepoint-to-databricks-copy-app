@@ -1,4 +1,5 @@
 let _msToken: string | null = null;
+let _msRefreshToken: string | null = null;
 
 export function setMsToken(token: string | null) {
   _msToken = token;
@@ -6,6 +7,14 @@ export function setMsToken(token: string | null) {
 
 export function getMsToken(): string | null {
   return _msToken;
+}
+
+export function setMsRefreshToken(token: string | null) {
+  _msRefreshToken = token;
+}
+
+export function getMsRefreshToken(): string | null {
+  return _msRefreshToken;
 }
 
 export async function apiFetch<T>(
@@ -18,6 +27,9 @@ export async function apiFetch<T>(
   };
   if (_msToken) {
     headers["X-MS-Token"] = _msToken;
+  }
+  if (_msRefreshToken) {
+    headers["X-MS-Refresh-Token"] = _msRefreshToken;
   }
 
   const resp = await fetch(path, { ...options, headers });

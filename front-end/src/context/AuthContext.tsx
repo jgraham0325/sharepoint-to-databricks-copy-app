@@ -7,8 +7,8 @@ import {
   type ReactNode,
 } from "react";
 import toast from "react-hot-toast";
-import { setMsToken } from "../api/client";
-import { refreshToken as apiRefreshToken, getMe } from "../api/auth";
+import { setMsToken, setMsRefreshToken } from "../api/client";
+import { refreshToken as apiRefreshToken, getMe, logout as apiLogout } from "../api/auth";
 
 const STORAGE_KEY = "ms-auth";
 
@@ -94,6 +94,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setAccessToken(res.access_token);
           setRefreshTokenValue(res.refresh_token);
           setMsToken(res.access_token);
+          setMsRefreshToken(res.refresh_token);
           saveAuth(res.access_token, res.refresh_token);
         })
         .catch(() => {
@@ -103,6 +104,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setAccessToken(storedAccess);
       setRefreshTokenValue(null);
       setMsToken(storedAccess);
+      setMsRefreshToken(null);
     }
   }, []);
 
@@ -141,6 +143,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setAccessToken(at);
         setRefreshTokenValue(rt);
         setMsToken(at);
+        setMsRefreshToken(rt);
         saveAuth(at, rt);
       } else if (e.data?.type === "ms-auth-error") {
         console.error("Authentication error:", e.data.error);
@@ -161,11 +164,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setAccessToken(res.access_token);
           setRefreshTokenValue(res.refresh_token);
           setMsToken(res.access_token);
+          setMsRefreshToken(res.refresh_token);
           saveAuth(res.access_token, res.refresh_token);
         } catch {
           setAccessToken(null);
           setRefreshTokenValue(null);
           setMsToken(null);
+          setMsRefreshToken(null);
           clearStoredAuth();
         }
       },
@@ -221,10 +226,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(() => {
+    apiLogout().catch(() => {});
     setAccessToken(null);
     setRefreshTokenValue(null);
     setUser(null);
     setMsToken(null);
+    setMsRefreshToken(null);
     clearStoredAuth();
   }, []);
 

@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 
 from routes.v1 import healthcheck, auth, sharepoint, transfer, volumes, agent
 
-app = FastAPI(title="SharePoint Upload App")
+app = FastAPI(title="SharePoint to Databricks Transfer")
 
 # --- API routes ---
 prefix = "/api/v1"

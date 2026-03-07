@@ -1,4 +1,4 @@
-# SharePoint Upload App
+# SharePoint to Databricks Transfer
 
 A Databricks App that lets users browse a SharePoint site, select files, and copy them into a Databricks Unity Catalog Volume. FastAPI backend + React frontend.
 
@@ -80,6 +80,8 @@ cd back-end
 uvicorn app:app --reload
 ```
 
+**Seeing server logs:** Logs from the FastAPI app (and `common.logger`) go to stdout. If you run the backend locally, they appear in the same terminal as uvicorn. If logs don’t show up, run with unbuffered output: `PYTHONUNBUFFERED=1 uvicorn app:app --reload`. If you run the app as a **Databricks App** (deployed via the bundle), the server runs in the cloud—view logs in the Databricks UI under the app’s run (e.g. **Apps** → your app → **Logs** or **Runs**).
+
 Open [http://localhost:8000](http://localhost:8000) in your browser.
 
 ### Frontend development mode (optional)
@@ -104,7 +106,7 @@ Open [http://localhost:5173](http://localhost:5173). **Use this URL (not 8000) s
 
 ### 1. Store Microsoft credentials as Databricks secrets
 
-Create a secret scope and add your three secrets:
+Create a secret scope and add your three app credentials. The **same scope** is used by the transfer job to read these and to read per-user tokens (written by the app when you start a transfer):
 
 ```bash
 databricks secrets create-scope sharepoint-app-scope
@@ -114,7 +116,10 @@ databricks secrets put-secret sharepoint-app-scope ms-client-secret --string-val
 databricks secrets put-secret sharepoint-app-scope ms-tenant-id --string-value "<your tenant ID>"
 ```
 
-These names match what `back-end/app.yaml` references under `value_from`.
+- **App credentials** (`ms-client-id`, `ms-client-secret`, `ms-tenant-id`): you create these once. They match what the app and the transfer job expect.
+- **Per-user tokens** (keys `tokens_<user_oid>`): written by the app when you start a transfer; the job reads them. You do not create these manually.
+- **Permissions**: The app identity needs **write** (e.g. `put_secret`) on the scope so it can store tokens. The **sharepoint-transfer** job identity needs **read** (e.g. `get_secret`) on the scope so it can read tokens and app credentials.
+- To use a different scope name, set the `SHAREPOINT_SECRET_SCOPE` environment variable (default is `sharepoint-app-scope`).
 
 ### 2. Build the frontend
 
@@ -128,7 +133,7 @@ The build output in `back-end/static/` is deployed alongside the backend.
 
 ### 3. Update the redirect URI
 
-Once you know your Databricks App URL (e.g. `https://sharepoint-upload-app-1234567890.azuredatabricks.net`), add it as a redirect URI in your Entra app registration:
+Once you know your Databricks App URL (e.g. `https://sharepoint-to-databricks-transfer-1234567890.azuredatabricks.net`), add it as a redirect URI in your Entra app registration:
 
 ```
 https://<your-app-url>/api/v1/auth/callback
@@ -153,7 +158,7 @@ databricks bundle deploy -t dev
 
 Replace `<your-workspace>` with your workspace hostname (e.g. `adb-1234567890123456.7`). You must be authenticated (e.g. `databricks auth login` or a token in `~/.databrickscfg`).
 
-After deployment, open your Databricks workspace, navigate to **Compute > Apps**, and find `sharepoint-upload-app` to see its URL and status.
+After deployment, open your Databricks workspace, navigate to **Compute > Apps**, and find **SharePoint to Databricks Transfer** to see its URL and status.
 
 The bundle also deploys a job named **sharepoint-transfer** (see `databricks.yml`). It runs on **serverless compute** and is used to offload large file transfers so the app server does not hold 10GB+ in memory. See [Large file handling](#large-file-handling) below.
 
