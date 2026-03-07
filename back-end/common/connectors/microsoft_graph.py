@@ -1,5 +1,6 @@
-from typing import Optional
+from typing import List, Optional, Tuple
 
+import asyncio
 import msal
 import httpx
 
@@ -54,6 +55,16 @@ def refresh_access_token(refresh_token: str) -> dict:
 async def graph_get(path: str, token: str, params: Optional[dict] = None) -> dict:
     """Perform an authenticated GET against the Microsoft Graph API."""
     url = f"{config.MS_GRAPH_BASE}{path}"
+    return await _graph_get_url(url, token, params)
+
+
+async def graph_get_by_url(url: str, token: str, params: Optional[dict] = None) -> dict:
+    """GET a full Microsoft Graph URL (e.g. @odata.nextLink). Use for pagination."""
+    return await _graph_get_url(url, token, params)
+
+
+async def _graph_get_url(url: str, token: str, params: Optional[dict] = None) -> dict:
+    """Internal: perform GET on the given URL with Bearer token."""
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             url,
@@ -77,6 +88,46 @@ async def graph_get(path: str, token: str, params: Optional[dict] = None) -> dic
                 error_detail, request=e.request, response=e.response
             ) from e
         return resp.json()
+
+
+async def graph_get_all_pages(
+    path: str, token: str, params: Optional[dict] = None, value_key: str = "value"
+) -> list:
+    """GET a Graph collection and follow @odata.nextLink until no more pages. Returns combined value_key list."""
+    data = await graph_get(path, token, params)
+    items = list(data.get(value_key, []))
+    next_link = data.get("@odata.nextLink")
+    while next_link:
+        data = await graph_get_by_url(next_link, token)
+        items.extend(data.get(value_key, []))
+        next_link = data.get("@odata.nextLink")
+    return items
+
+
+async def graph_get_download_urls_concurrent(
+    paths: List[str],
+    token: str,
+    max_concurrent: int = 15,
+) -> List[Tuple[Optional[str], Optional[str]]]:
+    """
+    Resolve download URLs for multiple Graph item paths with bounded concurrency.
+    paths: list of paths like "/drives/{drive_id}/items/{item_id}"
+    Returns: list of (download_url, error_message). download_url is None on failure; error_message set on failure.
+    """
+    sem = asyncio.Semaphore(max_concurrent)
+
+    async def fetch_one(path: str) -> Tuple[Optional[str], Optional[str]]:
+        async with sem:
+            try:
+                data = await graph_get(path, token)
+                url = data.get("@microsoft.graph.downloadUrl")
+                if not url:
+                    return (None, "No download URL available for this item")
+                return (url, None)
+            except Exception as e:
+                return (None, str(e))
+
+    return await asyncio.gather(*[fetch_one(p) for p in paths])
 
 
 async def graph_download(url: str, token: str) -> bytes:

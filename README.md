@@ -171,6 +171,15 @@ Configure:
 
 Ensure the `sharepoint-transfer` job is deployed (it is defined in `databricks.yml`) and that the job’s cluster has network access to Microsoft Graph and to your workspace (for volume uploads). **If selecting large files does not trigger the job** and you see an error like "Databricks job 'sharepoint-transfer' not found", run `databricks bundle deploy -t dev` so the job is created, or set `SHAREPOINT_TRANSFER_JOB_ID` in the app environment to the job ID from **Workflows > Jobs** in the workspace.
 
+### Scaling to many files (e.g. 10K+)
+
+- **Small batches** (fewer than `MAX_FILES_ON_SERVER` files, default 20, and all under the size threshold): Transfers run on the app server to avoid job startup delay.
+- **Larger batches**: The app writes manifest file(s) to the destination volume and submits one Databricks job run per manifest chunk (`FILES_PER_MANIFEST_CHUNK`, default 50). The job reads the manifest and transfers each file.
+- **SharePoint listing** follows `@odata.nextLink` so folders with more than 200 direct children are fully enumerated.
+- **Download URL resolution** uses bounded concurrency to avoid throttling.
+- **Transfer results** are capped in memory (`MAX_TRANSFER_RESULTS_IN_MEMORY`, default 500); the UI shows a summary and the capped list.
+- The job has `max_concurrent_runs: 20` in `databricks.yml`.
+
 ## Project Structure
 
 ```
@@ -294,6 +303,49 @@ curl -X POST http://localhost:8000/api/v1/transfer/copy-folder \
 ```
 
 An AI agent can chain: discover site → pick drive (and optionally folder) → pick volume → call `copy-folder` → poll `transfer/status` until done.
+
+## Scripts
+
+### Find your site and drive IDs
+
+Run the helper script to list all SharePoint sites you can access and their document libraries (drives) with IDs:
+
+```bash
+python scripts/list_sharepoint_sites_and_drives.py
+```
+
+You’ll sign in once via device code (browser). The script prints each **Site ID** and **Drive ID**; use the Drive ID with the sample-files script or the app API.
+
+### Create sample files in SharePoint
+
+The `scripts/create_sharepoint_sample_files.py` script creates many sample files in a SharePoint document library (e.g. 5,000 files of ~10 MB each) using Microsoft Graph upload sessions. Useful for load testing or populating a site before running transfers.
+
+**Requirements:** Same Microsoft app credentials as the app (`back-end/.env`). The app registration must have **Sites.FullControl.All** or **Files.ReadWrite.All** (delegated) and admin consent.
+
+**Usage:**
+
+1. Install backend dependencies (so `msal`, `httpx`, `python-dotenv` are available).
+2. From the repo root, use either a **document library URL** (easiest) or a **drive ID**:
+
+   **Option A — URL (recommended):** Paste the SharePoint document library URL from your browser (you can include a subfolder path):
+
+   ```bash
+   python scripts/create_sharepoint_sample_files.py --url "https://<tenant>.sharepoint.com/sites/<SiteName>/Shared%20Documents"
+   # or with a subfolder:
+   python scripts/create_sharepoint_sample_files.py --url "https://<tenant>.sharepoint.com/sites/<SiteName>/Shared%20Documents/MyFolder"
+   ```
+
+   **Option B — Drive ID:** Run `python scripts/list_sharepoint_sites_and_drives.py` to find the drive ID, then:
+
+   ```bash
+   python scripts/create_sharepoint_sample_files.py --drive-id "<drive-id>" [--folder-id "<folder-item-id>"] [--count 5000] [--size-mb 10]
+   ```
+
+3. On first run you’ll be prompted to sign in via device code (browser). With `--url`, the script resolves the site and document library from the URL; no need to look up IDs.
+
+**URL format:** Must start with `https://` and the path must be `/sites/<SiteName>/<LibraryName>` or `/teams/<TeamName>/<LibraryName>`. Add `/Folder/SubFolder` to upload into a subfolder. The library name is often "Shared Documents" or "Documents".
+
+**Options:** `--count` (default 5000), `--size-mb` (default 10), `--prefix` (default `sample`; files are named `sample_00001.bin`, …), `--dry-run` to print the plan without uploading.
 
 ## Smoke Test
 

@@ -8,8 +8,13 @@ import tempfile
 import time
 import uuid
 
+import json
+
 from common import config
-from common.connectors.microsoft_graph import graph_get, graph_download, graph_download_to_path
+from common.connectors.microsoft_graph import (
+    graph_download_to_path,
+    graph_get_download_urls_concurrent,
+)
 from common.connectors.workspace import upload_to_volume, upload_to_volume_from_file
 from common.authentication.workspace import get_workspace_client
 from common.logger import get_logger
@@ -22,7 +27,11 @@ from models.transfer import (
     JobRunStatus,
 )
 from services.sharepoint_service import list_all_files_in_folder
-from services.job_service import submit_transfer_batch, get_run_statuses, get_transfer_job_id, TRANSFER_BATCH_SIZE
+from services.job_service import (
+    get_run_statuses,
+    get_transfer_job_id,
+    submit_transfer_via_manifest,
+)
 
 logger = get_logger(__name__)
 
@@ -67,6 +76,14 @@ def _full_volume_path(catalog: str, schema_name: str, volume: str, file_path: st
     return f"/Volumes/{catalog}/{schema_name}/{volume}/{file_path}"
 
 
+def _append_result(state: TransferState, result: FileResult) -> None:
+    """Append a file result to state, capping at MAX_TRANSFER_RESULTS_IN_MEMORY."""
+    if len(state.results) < config.MAX_TRANSFER_RESULTS_IN_MEMORY:
+        state.results.append(result)
+    else:
+        state.results_truncated = True
+
+
 def _sync_state_from_job_runs(state: TransferState) -> None:
     """
     Poll job run statuses and incrementally update state: merge outcomes for each run as it
@@ -109,11 +126,12 @@ def _sync_state_from_job_runs(state: TransferState) -> None:
             for name in names:
                 if result_state == "SUCCESS":
                     state.completed += 1
-                    state.results.append(FileResult(name=name, status=TransferStatus.COMPLETED))
+                    _append_result(state, FileResult(name=name, status=TransferStatus.COMPLETED))
                 else:
                     state.failed += 1
-                    state.results.append(
-                        FileResult(name=name, status=TransferStatus.FAILED, error=state_message or "Job task failed")
+                    _append_result(
+                        state,
+                        FileResult(name=name, status=TransferStatus.FAILED, error=state_message or "Job task failed"),
                     )
         else:
             js.status = "running"
@@ -206,26 +224,24 @@ async def _execute_transfer(
 ) -> None:
     ws_client = get_workspace_client()
     threshold = config.LARGE_FILE_THRESHOLD_BYTES
+    max_on_server = config.MAX_FILES_ON_SERVER
+    full_volume_base = f"/Volumes/{catalog}/{schema_name}/{volume}"
 
-    # Resolve download URL and target path for each file
-    items: List[tuple] = []
-    for f in files:
-        try:
-            item_data = await graph_get(
-                f"/drives/{f.drive_id}/items/{f.item_id}",
-                ms_token,
-            )
-            download_url = item_data.get("@microsoft.graph.downloadUrl")
-            if not download_url:
-                raise ValueError("No download URL available for this item")
-            target_path = _target_path(subfolder, f)
-            items.append((f, download_url, target_path))
-        except Exception as exc:
+    # Resolve download URLs with bounded concurrency (avoids 10K sequential Graph calls)
+    paths = [f"/drives/{f.drive_id}/items/{f.item_id}" for f in files]
+    url_results = await graph_get_download_urls_concurrent(paths, ms_token)
+
+    items: List[Tuple[FileTransferItem, str, str]] = []
+    for f, (download_url, error_msg) in zip(files, url_results):
+        if error_msg or not download_url:
             state.failed += 1
-            state.results.append(
-                FileResult(name=f.name, status=TransferStatus.FAILED, error=str(exc))
+            _append_result(
+                state,
+                FileResult(name=f.name, status=TransferStatus.FAILED, error=error_msg or "No download URL"),
             )
-            logger.error("Failed to get URL for %s: %s", f.name, exc)
+            logger.error("Failed to get URL for %s: %s", f.name, error_msg)
+        else:
+            items.append((f, download_url, _target_path(subfolder, f)))
 
     if not items:
         state.status = TransferStatus.COMPLETED if state.failed == 0 else TransferStatus.FAILED
@@ -233,71 +249,100 @@ async def _execute_transfer(
             state.duration_seconds = round(time.time() - state.started_at, 2)
         return
 
-    full_volume_base = f"/Volumes/{catalog}/{schema_name}/{volume}"
-    run_ids: List[int] = []
-    run_id_to_file: Dict[str, List[str]] = {}
+    # Small-batch fast path: avoid job startup when few small files
+    use_server_only = (
+        len(items) < max_on_server
+        and all(0 < f.size < threshold for f, _, _ in items)
+    )
 
-    # Route per file: small files on this server, large/unknown-size files to Databricks job
-    small_items = [(f, download_url, target_path) for f, download_url, target_path in items if 0 < f.size < threshold]
-    large_items = [(f, download_url, target_path) for f, download_url, target_path in items if f.size >= threshold or f.size <= 0]
+    if use_server_only:
+        # Transfer all on this server (no job)
+        for f, download_url, target_path in items:
+            tmp = None
+            try:
+                fd, tmp = tempfile.mkstemp(suffix=".tmp", prefix="sharepoint_")
+                os.close(fd)
+                await graph_download_to_path(download_url, ms_token, tmp)
+                await asyncio.to_thread(
+                    upload_to_volume_from_file,
+                    ws_client,
+                    catalog,
+                    schema_name,
+                    volume,
+                    target_path,
+                    tmp,
+                )
+                state.completed += 1
+                _append_result(state, FileResult(name=f.name, status=TransferStatus.COMPLETED))
+                logger.info("Transferred %s (server)", f.name)
+            except Exception as exc:
+                state.failed += 1
+                _append_result(state, FileResult(name=f.name, status=TransferStatus.FAILED, error=str(exc)))
+                logger.error("Failed to transfer %s: %s", f.name, exc)
+            finally:
+                if tmp and os.path.exists(tmp):
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+        state.status = TransferStatus.COMPLETED if state.failed == 0 else TransferStatus.FAILED
+        if state.started_at is not None:
+            state.duration_seconds = round(time.time() - state.started_at, 2)
+        return
 
-    # Fail fast if we have large files but the Databricks transfer job is not available
+    # Bulk path: write manifest chunk(s) to volume and submit job run(s)
+    job_id = get_transfer_job_id()
     job_not_found_msg = (
         "Databricks job 'sharepoint-transfer' not found. Deploy the bundle (databricks bundle deploy) "
         "or set SHAREPOINT_TRANSFER_JOB_ID in the app environment."
     )
-    if large_items:
-        job_id = get_transfer_job_id()
-        if not job_id:
-            logger.warning("Large files present but %s", job_not_found_msg)
-            for f, _, _ in large_items:
-                state.failed += 1
-                state.results.append(
-                    FileResult(name=f.name, status=TransferStatus.FAILED, error=job_not_found_msg)
-                )
-            large_items = []
+    if not job_id:
+        logger.warning("%s", job_not_found_msg)
+        for f, _, _ in items:
+            state.failed += 1
+            _append_result(state, FileResult(name=f.name, status=TransferStatus.FAILED, error=job_not_found_msg))
+        state.status = TransferStatus.FAILED
+        if state.started_at is not None:
+            state.duration_seconds = round(time.time() - state.started_at, 2)
+        return
 
-    # Batch large files; one job run per batch. Submit all batches in parallel when there is more than one.
-    num_batches = (len(large_items) + TRANSFER_BATCH_SIZE - 1) // TRANSFER_BATCH_SIZE
-    if large_items:
-        logger.info("Submitting %d large file(s) in %d batch(es) to Databricks job", len(large_items), num_batches)
+    chunk_size = config.FILES_PER_MANIFEST_CHUNK
+    run_ids: List[int] = []
+    run_id_to_file: Dict[str, List[str]] = {}
 
-    async def submit_batch(i: int) -> Tuple[Optional[int], List[str]]:
-        batch = large_items[i : i + TRANSFER_BATCH_SIZE]
-        url_path_pairs = [(url, f"{full_volume_base}/{path}") for _, url, path in batch]
-        file_names = [f.name for f, _, _ in batch]
+    for chunk_index in range(0, len(items), chunk_size):
+        chunk = items[chunk_index : chunk_index + chunk_size]
+        manifest = [
+            {"download_url": url, "volume_path": f"{full_volume_base}/{path}"}
+            for _, url, path in chunk
+        ]
+        manifest_path_in_volume = f"_manifests/transfer_{state.transfer_id}_{chunk_index}.json"
+        manifest_bytes = json.dumps(manifest).encode("utf-8")
+        upload_to_volume(ws_client, catalog, schema_name, volume, manifest_path_in_volume, manifest_bytes)
+        full_manifest_path = f"{full_volume_base}/{manifest_path_in_volume}"
+
         run_id = await asyncio.to_thread(
-            submit_transfer_batch,
+            submit_transfer_via_manifest,
             ms_token,
-            url_path_pairs,
-            f"batch {i // TRANSFER_BATCH_SIZE}",
+            full_manifest_path,
+            f"chunk {chunk_index}",
         )
-        return (run_id, file_names)
-
-    if num_batches > 1:
-        batch_results = await asyncio.gather(
-            *[submit_batch(i) for i in range(0, len(large_items), TRANSFER_BATCH_SIZE)]
-        )
-    else:
-        batch_results = [await submit_batch(0)] if large_items else []
-
-    for run_id, file_names in batch_results:
+        file_names = [f.name for f, _, _ in chunk]
         if run_id is not None:
             run_ids.append(run_id)
             run_id_to_file[str(run_id)] = file_names
         else:
             for name in file_names:
                 state.failed += 1
-                state.results.append(
-                    FileResult(name=name, status=TransferStatus.FAILED, error=job_not_found_msg)
+                _append_result(
+                    state,
+                    FileResult(name=name, status=TransferStatus.FAILED, error=job_not_found_msg),
                 )
 
     if run_ids:
         state.run_ids = run_ids
         state.run_id_to_file = run_id_to_file
-        # Build workspace job run URLs and per-run status for the UI
         host = (config.DATABRICKS_HOST or "").rstrip("/")
-        job_id = get_transfer_job_id()
         if host and job_id:
             state.job_run_urls = [f"{host}#job/{job_id}/run/{rid}" for rid in run_ids]
         else:
@@ -312,40 +357,7 @@ async def _execute_transfer(
             for i, rid in enumerate(run_ids)
         ]
 
-    # Handle small files on the Python server: stream to temp then upload (bounded memory).
-    # Run blocking upload in a thread so the event loop stays responsive for status polls.
-    for f, download_url, target_path in small_items:
-        tmp = None
-        try:
-            fd, tmp = tempfile.mkstemp(suffix=".tmp", prefix="sharepoint_")
-            os.close(fd)
-            await graph_download_to_path(download_url, ms_token, tmp)
-            await asyncio.to_thread(
-                upload_to_volume_from_file,
-                ws_client,
-                catalog,
-                schema_name,
-                volume,
-                target_path,
-                tmp,
-            )
-            state.completed += 1
-            state.results.append(FileResult(name=f.name, status=TransferStatus.COMPLETED))
-            logger.info("Transferred %s (server)", f.name)
-        except Exception as exc:
-            state.failed += 1
-            state.results.append(
-                FileResult(name=f.name, status=TransferStatus.FAILED, error=str(exc))
-            )
-            logger.error("Failed to transfer %s: %s", f.name, exc)
-        finally:
-            if tmp and os.path.exists(tmp):
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-
-    # If no job runs are pending, we can set final status now; otherwise get_transfer() will sync when jobs finish
+    # Sync outcomes from job runs is done in get_transfer via _sync_state_from_job_runs; use _append_result there too
     if not state.run_ids:
         state.status = TransferStatus.COMPLETED if state.failed == 0 else TransferStatus.FAILED
         if state.started_at is not None:

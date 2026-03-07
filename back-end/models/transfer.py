@@ -82,3 +82,5 @@ class TransferState(BaseModel):
     # Timing: set when transfer starts and when it finishes
     started_at: Optional[float] = None  # Unix timestamp
     duration_seconds: Optional[float] = None  # Elapsed time when finished
+    # True when results were capped (e.g. only first N kept in memory)
+    results_truncated: bool = False

@@ -92,6 +92,15 @@ export default function TransferPanel({ state }: Props) {
         className="mb-3"
       />
 
+      {state.total > 0 && (
+        <p className="text-muted small mb-2">
+          {state.completed} completed, {state.failed} failed
+          {state.total > state.completed + state.failed && (
+            <span>, {state.total - state.completed - state.failed} in progress</span>
+          )}
+        </p>
+      )}
+
       {state.failed > 0 && (
         <Alert variant="warning" className="py-2">
           {state.failed} file(s) failed to transfer
@@ -99,22 +108,29 @@ export default function TransferPanel({ state }: Props) {
       )}
 
       {state.results.length > 0 && (
-        <ListGroup>
-          {state.results.map((r, i) => (
-            <ListGroup.Item
-              key={i}
-              className="d-flex justify-content-between align-items-center py-2"
-            >
-              <span>
-                <i
-                  className={`bi ${r.status === "completed" ? "bi-check-circle text-success" : "bi-x-circle text-danger"} me-2`}
-                ></i>
-                {r.name}
-              </span>
-              {r.error && <small className="text-danger">{r.error}</small>}
-            </ListGroup.Item>
-          ))}
-        </ListGroup>
+        <>
+          <ListGroup className="mb-1">
+            {state.results.map((r, i) => (
+              <ListGroup.Item
+                key={i}
+                className="d-flex justify-content-between align-items-center py-2"
+              >
+                <span>
+                  <i
+                    className={`bi ${r.status === "completed" ? "bi-check-circle text-success" : "bi-x-circle text-danger"} me-2`}
+                  ></i>
+                  {r.name}
+                </span>
+                {r.error && <small className="text-danger">{r.error}</small>}
+              </ListGroup.Item>
+            ))}
+          </ListGroup>
+          {state.results_truncated && (
+            <p className="text-muted small mb-0">
+              Showing first {state.results.length} results; more files were transferred.
+            </p>
+          )}
+        </>
       )}
 
       {transferFinished && hasCompletedFiles && (

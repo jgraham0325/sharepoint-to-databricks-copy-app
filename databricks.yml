@@ -17,6 +17,7 @@ resources:
     sharepoint-transfer:
       name: sharepoint-transfer
       description: "Transfer large files from SharePoint to UC volumes (offloaded from app server)"
+      max_concurrent_runs: 20
       environments:
         - environment_key: default
           spec:

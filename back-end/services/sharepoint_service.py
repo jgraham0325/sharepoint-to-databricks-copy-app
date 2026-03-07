@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from common.connectors.microsoft_graph import graph_get
+from common.connectors.microsoft_graph import graph_get, graph_get_all_pages
 from models.sharepoint import Site, Drive, DriveItem
 from models.transfer import FileTransferItem
 
@@ -273,14 +273,12 @@ async def list_children(
 
     logger.info("Listing children from path: %s", path)
 
-    data = await graph_get(
+    raw_items = await graph_get_all_pages(
         path,
         token,
         params={"$top": "200", "$orderby": "name"},
     )
-
-    raw_items = data.get("value", [])
-    logger.info("API returned %d items", len(raw_items))
+    logger.info("API returned %d items (all pages)", len(raw_items))
 
     items = []
     for i in raw_items:

@@ -36,13 +36,13 @@ def submit_transfer_batch(
     task_label: str = "transfer",
 ) -> Optional[int]:
     """
-    Submit one job run for a batch of files. Each file is transferred in full (no chunking).
-    python_params: [token, url1, path1, url2, path2, ...]. Does not wait for completion.
+    Submit one job run for a batch of files (legacy: argv url/path pairs).
+    Use submit_transfer_via_manifest for large batches instead.
     """
     if not url_path_pairs:
         return None
     client = get_workspace_client()
-    job_id = config.SHAREPOINT_TRANSFER_JOB_ID or _get_transfer_job_id(client)
+    job_id = get_transfer_job_id()
     if not job_id:
         logger.warning("No sharepoint-transfer job found; deploy the bundle job or set SHAREPOINT_TRANSFER_JOB_ID")
         return None
@@ -54,6 +54,31 @@ def submit_transfer_batch(
     run_id = response.run_id if response else None
     if run_id:
         logger.info("Submitted transfer run_id=%s for batch of %d file(s) (%s)", run_id, len(url_path_pairs), task_label)
+    return run_id
+
+
+def submit_transfer_via_manifest(
+    token: str,
+    manifest_volume_path: str,
+    task_label: str = "manifest",
+) -> Optional[int]:
+    """
+    Submit one job run that reads a manifest from a UC volume path and transfers all files listed.
+    python_params: [token, manifest_volume_path]. Does not wait for completion.
+    """
+    if not manifest_volume_path or not token:
+        return None
+    job_id = get_transfer_job_id()
+    if not job_id:
+        logger.warning("No sharepoint-transfer job found; deploy the bundle job or set SHAREPOINT_TRANSFER_JOB_ID")
+        return None
+    response = get_workspace_client().jobs.run_now(
+        job_id=job_id,
+        python_params=[token, manifest_volume_path],
+    )
+    run_id = response.run_id if response else None
+    if run_id:
+        logger.info("Submitted transfer run_id=%s via manifest %s (%s)", run_id, manifest_volume_path, task_label)
     return run_id
 
 

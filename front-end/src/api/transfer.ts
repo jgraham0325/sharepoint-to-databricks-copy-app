@@ -59,6 +59,8 @@ export interface TransferState {
   job_run_statuses?: JobRunStatus[] | null;
   /** Elapsed time in seconds when transfer has finished */
   duration_seconds?: number | null;
+  /** True when results were capped (only first N kept in memory) */
+  results_truncated?: boolean;
 }
 
 export function startTransfer(req: TransferRequest): Promise<TransferState> {
