@@ -17,7 +17,7 @@ resources:
     sharepoint-transfer:
       name: sharepoint-transfer
       description: "Transfer large files from SharePoint to UC volumes (offloaded from app server)"
-      max_concurrent_runs: 1
+      max_concurrent_runs: 3
       # Includes time in queue (Queued/Pending) + execution. Set high so batches aren't killed while waiting.
       timeout_seconds: 10800
       parameters:

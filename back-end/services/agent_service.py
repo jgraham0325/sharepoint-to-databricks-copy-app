@@ -1,6 +1,6 @@
 """
 Agent service: runs a chat loop with Databricks Foundation Model API and tools
-to list SharePoint sites/drives/folders, list volumes, and copy folders to a volume.
+to browse SharePoint, copy folders to volumes, and monitor transfers.
 """
 from __future__ import annotations
 
@@ -93,12 +93,20 @@ AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "list_transfers",
+            "description": "List all transfers (running, completed, failed, pending). Returns a summary of each transfer including status, progress, timing, and Databricks job run URL. Use this when the user asks about running transfers, recent transfers, or transfer history.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_transfer_status",
-            "description": "Check the status of a copy operation started by copy_folder_to_volume.",
+            "description": "Get detailed status for a specific transfer by its transfer_id, including per-file results. Use list_transfers first to find transfer IDs.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "transfer_id": {"type": "string", "description": "Transfer ID returned by copy_folder_to_volume."},
+                    "transfer_id": {"type": "string", "description": "Transfer ID from list_transfers or copy_folder_to_volume."},
                 },
                 "required": ["transfer_id"],
             },
@@ -143,24 +151,40 @@ AGENT_TOOLS = [
     },
 ]
 
-SYSTEM_PROMPT = """You are an assistant that helps users copy files from SharePoint to a Databricks Unity Catalog volume.
+SYSTEM_PROMPT = """You are an assistant that helps users transfer files from SharePoint to Databricks Unity Catalog volumes, and monitor those transfers.
 
-You have access to:
+**Tools available:**
+
+Browse SharePoint:
 - list_sites: find SharePoint sites (use query to search by name)
 - list_drives: get document libraries for a site
 - list_children: list files/folders in a drive or folder (use item_id for a subfolder)
-- copy_folder_to_volume: copy a whole folder (recursively) to a volume. Use folder_item_id for a specific folder or omit to copy the drive root.
-- get_transfer_status: check progress of a copy
-- list_catalogs, list_schemas, list_volumes: discover destination catalogs/schemas/volumes
 
-When the user asks to copy something (e.g. "copy the Reports folder from Marketing site to my volume"):
+Transfer files:
+- copy_folder_to_volume: copy an entire SharePoint folder (recursively) to a volume
+
+Monitor transfers:
+- list_transfers: list ALL transfers with status, progress, timing, and job URLs. Use this when the user asks about running transfers, recent transfers, or wants an overview.
+- get_transfer_status: get detailed status for a specific transfer including per-file results. Use list_transfers first to find transfer IDs if the user hasn't provided one.
+
+Discover Databricks destinations:
+- list_catalogs, list_schemas, list_volumes: browse Unity Catalog to find destination volumes
+
+**Workflows:**
+
+When the user asks to copy something:
 1. Find the site (list_sites), then list_drives for that site.
-2. If they named a folder, use list_children to find that folder's id; otherwise you can copy from drive root.
-3. Find the destination: list_catalogs, then list_schemas, then list_volumes, or use what the user specified.
-4. Call copy_folder_to_volume with drive_id, optional folder_item_id, catalog, schema_name, volume, and optional subfolder.
-5. Optionally check get_transfer_status and report back.
+2. If they named a folder, use list_children to find that folder's ID.
+3. Find the destination volume using list_catalogs → list_schemas → list_volumes, or use what the user specified.
+4. Call copy_folder_to_volume.
+5. Report what was started (transfer_id, file count).
 
-Respond in clear, short sentences. After a copy, summarize what was copied and where."""
+When the user asks about transfers (e.g. "what's running?", "show my transfers", "any transfers still going?"):
+1. Call list_transfers to get all transfers.
+2. Summarize clearly: group by status (in_progress, completed, failed), show progress and timing.
+3. If the user wants details on a specific transfer, use get_transfer_status.
+
+Respond in clear, short sentences. Use markdown formatting for readability (tables, bold, bullet points)."""
 
 
 async def _run_tool(name: str, arguments: dict, ms_token: str) -> str:
@@ -208,6 +232,23 @@ async def _run_tool(name: str, arguments: dict, ms_token: str) -> str:
                 "message": f"Copy started. {state.total} file(s). Poll get_transfer_status with transfer_id to check progress.",
             })
 
+        if name == "list_transfers":
+            from datetime import datetime, timezone
+            summaries = transfer_service.list_transfers()
+            return json.dumps([
+                {
+                    "transfer_id": s.transfer_id,
+                    "status": s.status.value,
+                    "total": s.total,
+                    "completed": s.completed,
+                    "failed": s.failed,
+                    "started_at": datetime.fromtimestamp(s.started_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC") if s.started_at else None,
+                    "duration_seconds": round(s.duration_seconds, 1) if s.duration_seconds else None,
+                    "job_run_url": s.job_run_url,
+                }
+                for s in summaries
+            ])
+
         if name == "get_transfer_status":
             transfer_id = arguments["transfer_id"]
             state = transfer_service.get_transfer(transfer_id)
@@ -219,6 +260,9 @@ async def _run_tool(name: str, arguments: dict, ms_token: str) -> str:
                 "total": state.total,
                 "completed": state.completed,
                 "failed": state.failed,
+                "catalog": state.catalog,
+                "schema_name": state.schema_name,
+                "volume": state.volume,
                 "results": [{"name": r.name, "status": r.status.value, "error": r.error} for r in state.results],
             })
 

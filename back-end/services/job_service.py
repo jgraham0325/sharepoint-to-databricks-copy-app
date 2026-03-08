@@ -1,5 +1,6 @@
 """Resolve and run the SharePoint transfer job on Databricks for large files (multiple files per run)."""
 import json
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from databricks.sdk import WorkspaceClient
@@ -87,12 +88,14 @@ def submit_transfer_via_manifests(
     task_label: str = "manifests",
     ms_refresh_token: Optional[str] = None,
     user_oid: Optional[str] = None,
+    transfer_id: Optional[str] = None,
 ) -> Optional[int]:
     """
     Submit one job run that processes all given manifest paths via the job's For Each task.
     Tokens are written to the configured secret scope; job run is started with job_parameters
     (manifest_paths_json, scope, tokens_key). Requires SHAREPOINT_SECRET_SCOPE and user_oid.
     Does not wait for completion. Returns the single run_id.
+    transfer_id is optional (used for logging; run_name is not set as the SDK does not support it).
     """
     if not manifest_paths or not token:
         return None
@@ -113,6 +116,7 @@ def submit_transfer_via_manifests(
         "scope": scope,
         "tokens_key": tokens_key,
     }
+    # Note: run_name is not supported by the Python SDK run_now; transfer_id is derived from manifest path when needed
     response = get_workspace_client().jobs.run_now(
         job_id=job_id,
         job_parameters=job_parameters,
@@ -429,6 +433,56 @@ def get_run_for_each_iterations(run_id: int) -> List[Dict[str, Any]]:
         return out
     except Exception as e:
         logger.warning("Failed to get run for_each iterations run_id=%s: %s", run_id, e)
+        return []
+
+
+def get_run_and_transfer_id(run_id: int) -> Tuple[Any, Optional[str]]:
+    """
+    Get run by run_id and derive transfer_id from run_name (transfer-{id}) or from
+    job_parameters.manifest_paths_json (path contains _manifests/transfer_{id}_).
+    Returns (run, transfer_id or None).
+    """
+    client = get_workspace_client()
+    run = client.jobs.get_run(run_id=run_id)
+    transfer_id = None
+    run_name = getattr(run, "run_name", None) or getattr(run, "name", None)
+    if run_name and isinstance(run_name, str) and run_name.startswith("transfer-"):
+        transfer_id = run_name[len("transfer-"):].strip()
+    if not transfer_id:
+        params = getattr(run, "job_parameters", None) or getattr(run, "override_parameters", None) or {}
+        if isinstance(params, dict):
+            raw = params.get("manifest_paths_json")
+        else:
+            raw = getattr(params, "manifest_paths_json", None)
+        if raw:
+            try:
+                paths = json.loads(raw) if isinstance(raw, str) else raw
+                if paths and isinstance(paths[0], str):
+                    # e.g. /Volumes/cat/sch/vol/_manifests/transfer_abc123_0.json
+                    m = re.search(r"_manifests/transfer_([a-f0-9]+)_\d+\.json", paths[0])
+                    if m:
+                        transfer_id = m.group(1)
+            except (json.JSONDecodeError, TypeError, IndexError):
+                pass
+    return (run, transfer_id)
+
+
+def list_recent_transfer_runs(limit: int = 25) -> List[int]:
+    """Return run_ids for the most recent runs of the sharepoint-transfer job (newest first)."""
+    job_id = get_transfer_job_id()
+    if not job_id:
+        return []
+    try:
+        client = get_workspace_client()
+        run_ids: List[int] = []
+        for run in client.jobs.list_runs(job_id=job_id, expand_tasks=False):
+            if run.run_id is not None:
+                run_ids.append(run.run_id)
+            if len(run_ids) >= limit:
+                break
+        return run_ids
+    except Exception as e:
+        logger.warning("Failed to list recent transfer runs: %s", e)
         return []
 
 

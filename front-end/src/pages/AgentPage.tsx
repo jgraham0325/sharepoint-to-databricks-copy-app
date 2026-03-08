@@ -60,7 +60,7 @@ export default function AgentPage() {
           >
             {messages.length === 0 && (
               <p className="text-muted small mb-0">
-                Ask in plain language, e.g.: “Copy the Reports folder from the Marketing site to catalog main, schema my_schema, volume sharepoint_imports” or “List my SharePoint sites” or “What volumes do I have?”
+                Try: <strong>"Show me all running transfers"</strong>, "Copy the Reports folder from Marketing site to my volume", "List my SharePoint sites", or "What volumes do I have?"
               </p>
             )}
             {messages.map((m, i) => (
@@ -110,7 +110,7 @@ export default function AgentPage() {
               className="d-flex gap-2"
             >
               <Form.Control
-                placeholder="Ask to copy a folder or list sites/volumes..."
+                placeholder="Ask about transfers, copy folders, list sites/volumes..."
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 disabled={loading}

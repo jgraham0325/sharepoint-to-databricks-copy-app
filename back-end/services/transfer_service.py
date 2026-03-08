@@ -24,6 +24,7 @@ from models.transfer import (
     FolderTransferItem,
     TransferState,
     TransferStatus,
+    TransferSummary,
     FileResult,
     JobRunStatus,
     TaskIterationStatus,
@@ -31,16 +32,43 @@ from models.transfer import (
 )
 from services.sharepoint_service import list_all_files_in_folder
 from services.job_service import (
+    get_run_and_transfer_id,
     get_run_for_each_iterations,
     get_run_statuses,
     get_transfer_job_id,
     submit_transfer_via_manifests,
 )
+from services import transfer_store
 
 logger = get_logger(__name__)
 
-# In-memory transfer tracking (single-instance app)
-_transfers: Dict[str, TransferState] = {}
+# In-memory cache for active transfers (rich state needed for polling/progress).
+# SQLite (transfer_store) is the persistent source of truth for the transfer list.
+_active: Dict[str, TransferState] = {}
+
+
+def _save(state: TransferState) -> None:
+    """Persist transfer to both in-memory cache and SQLite."""
+    _active[state.transfer_id] = state
+    try:
+        transfer_store.save(state)
+    except Exception as e:
+        logger.warning("Failed to persist transfer %s to SQLite: %s", state.transfer_id, e)
+
+
+def list_transfers() -> List[TransferSummary]:
+    """Return summaries of all known transfers, most recent first.
+    Active (in-memory) transfers are synced from Databricks job runs first,
+    then merged with historical transfers from SQLite.
+    """
+    # Sync active transfers and persist updated state
+    for s in list(_active.values()):
+        if s.run_ids:
+            _sync_state_from_job_runs(s)
+            _save(s)
+
+    # Read all transfers from SQLite (includes both active and historical)
+    return transfer_store.list_all()
 
 
 def build_batches_for_response(state: TransferState) -> Optional[List[TransferBatch]]:
@@ -92,10 +120,106 @@ def build_batches_for_response(state: TransferState) -> Optional[List[TransferBa
 
 
 def get_transfer(transfer_id: str) -> Optional[TransferState]:
-    state = _transfers.get(transfer_id)
-    if state and state.run_ids:
-        _sync_state_from_job_runs(state)
-    return state
+    """Get full transfer state. Prefers in-memory (active) state; falls back to rebuilding from run."""
+    state = _active.get(transfer_id)
+    if state:
+        if state.run_ids:
+            _sync_state_from_job_runs(state)
+            _save(state)
+        return state
+    # Not in memory — check SQLite for the run_ids so we can rebuild rich state
+    summary = transfer_store.get(transfer_id)
+    if summary and summary.run_ids:
+        rebuilt = _build_transfer_state_from_run(summary.run_ids[0])
+        if rebuilt:
+            _active[rebuilt.transfer_id] = rebuilt
+            return rebuilt
+    return None
+
+
+def _find_transfer_by_run_id(run_id: int) -> Optional[TransferState]:
+    """Return in-memory transfer state that has this run_id, or None."""
+    for state in _active.values():
+        if state.run_ids and run_id in state.run_ids:
+            return state
+    return None
+
+
+def _build_transfer_state_from_run(run_id: int) -> Optional[TransferState]:
+    """
+    Build a TransferState from the Databricks job run (no in-memory state).
+    Used when status is requested by run_id and the transfer is not in _active (e.g. after restart).
+    """
+    try:
+        run, transfer_id = get_run_and_transfer_id(run_id)
+        transfer_id = transfer_id or str(run_id)
+        statuses = get_run_statuses([run_id])
+        lc, result_state, state_message = (statuses[0][1], statuses[0][2], statuses[0][3]) if statuses else ("UNKNOWN", "", "")
+        if lc in ("TERMINATED", "SKIPPED", "INTERNAL_ERROR"):
+            status = TransferStatus.COMPLETED if result_state == "SUCCESS" else TransferStatus.FAILED
+        else:
+            status = TransferStatus.IN_PROGRESS
+        iterations_raw = get_run_for_each_iterations(run_id)
+        task_iterations = [
+            TaskIterationStatus(
+                index=i,
+                life_cycle_state=it.get("life_cycle_state", "PENDING"),
+                result_state=it.get("result_state", ""),
+                state_message=it.get("state_message", ""),
+            )
+            for i, it in enumerate(iterations_raw)
+        ]
+        completed = sum(1 for it in task_iterations if it.result_state == "SUCCESS")
+        failed = sum(1 for it in task_iterations if it.result_state == "FAILED")
+        total = len(task_iterations)
+        job_id = get_transfer_job_id()
+        host = (config.DATABRICKS_HOST or "").rstrip("/")
+        job_run_url = f"{host}#job/{job_id}/run/{run_id}" if host and job_id else None
+        run_start = getattr(run, "start_time", None)
+        started_at = float(run_start) / 1000.0 if run_start else None
+        return TransferState(
+            transfer_id=transfer_id,
+            status=status,
+            total=total,
+            completed=completed,
+            failed=failed,
+            results=[],
+            run_ids=[run_id],
+            job_run_url=job_run_url,
+            job_run_urls=[job_run_url] if job_run_url else None,
+            job_run_statuses=[
+                JobRunStatus(
+                    run_id=run_id,
+                    url=job_run_url,
+                    status="success" if result_state == "SUCCESS" else "failed",
+                    file_names=[],
+                    error=None if result_state == "SUCCESS" else (state_message or "Job failed"),
+                )
+            ],
+            task_iterations=task_iterations,
+            total_iterations=total,
+            started_at=started_at,
+        )
+    except Exception as e:
+        logger.warning("Failed to build transfer state from run_id=%s: %s", run_id, e)
+        return None
+
+
+def get_transfer_by_run_id(run_id: int) -> Optional[TransferState]:
+    """
+    Get transfer state by run_id. Prefers in-memory (active) state; falls back to
+    rebuilding from Databricks SDK and persisting the result.
+    """
+    state = _find_transfer_by_run_id(run_id)
+    if state:
+        if state.run_ids:
+            _sync_state_from_job_runs(state)
+            _save(state)
+        return state
+    rebuilt = _build_transfer_state_from_run(run_id)
+    if rebuilt:
+        _save(rebuilt)
+    return rebuilt
 
 
 def _catalog_explorer_url(
@@ -316,6 +440,7 @@ def _sync_state_from_job_runs(state: TransferState) -> None:
         state.status = TransferStatus.COMPLETED if state.failed == 0 else TransferStatus.FAILED
         if state.started_at is not None:
             state.duration_seconds = round(time.time() - state.started_at, 2)
+        _save(state)
         logger.info(
             "Transfer %s job runs finished; total completed=%d failed=%d (%.2fs)",
             state.transfer_id, state.completed, state.failed, state.duration_seconds or 0,
@@ -374,7 +499,7 @@ async def start_transfer(
         catalog_explorer_url=_catalog_explorer_url(catalog, schema_name, volume, subfolder),
         started_at=time.time(),
     )
-    _transfers[transfer_id] = state
+    _save(state)
 
     # Run the actual transfers in background
     asyncio.create_task(
@@ -522,14 +647,28 @@ async def _execute_transfer(
         all_file_names.extend(f.name for f, _ in chunk)
 
     if manifest_paths:
-        run_id = await asyncio.to_thread(
-            submit_transfer_via_manifests,
-            ms_token,
-            manifest_paths,
-            task_label="bulk",
-            ms_refresh_token=ms_refresh_token,
-            user_oid=user_oid,
-        )
+        try:
+            run_id = await asyncio.to_thread(
+                submit_transfer_via_manifests,
+                ms_token,
+                manifest_paths,
+                task_label="bulk",
+                ms_refresh_token=ms_refresh_token,
+                user_oid=user_oid,
+                transfer_id=state.transfer_id,
+            )
+        except Exception as exc:
+            logger.exception("Failed to submit transfer job for transfer_id=%s", state.transfer_id)
+            for name in all_file_names:
+                state.failed += 1
+                _append_result(
+                    state,
+                    FileResult(name=name, status=TransferStatus.FAILED, error=f"Job submission failed: {exc}"),
+                )
+            state.status = TransferStatus.FAILED
+            if state.started_at is not None:
+                state.duration_seconds = round(time.time() - state.started_at, 2)
+            return
         if run_id is not None:
             state.run_ids = [run_id]
             state.run_id_to_file = {str(run_id): all_file_names}
@@ -553,18 +692,24 @@ async def _execute_transfer(
             state.total_iterations = len(manifest_paths)
             state.batch_file_counts = batch_file_counts
         else:
+            logger.warning("submit_transfer_via_manifests returned None for transfer_id=%s", state.transfer_id)
             for name in all_file_names:
                 state.failed += 1
                 _append_result(
                     state,
                     FileResult(name=name, status=TransferStatus.FAILED, error=job_not_found_msg),
                 )
+            state.status = TransferStatus.FAILED
+            if state.started_at is not None:
+                state.duration_seconds = round(time.time() - state.started_at, 2)
 
     # Sync outcomes from job runs is done in get_transfer via _sync_state_from_job_runs; use _append_result there too
     if not state.run_ids:
         state.status = TransferStatus.COMPLETED if state.failed == 0 else TransferStatus.FAILED
         if state.started_at is not None:
             state.duration_seconds = round(time.time() - state.started_at, 2)
+
+    _save(state)
 
 
 async def start_folder_transfer(
@@ -595,7 +740,7 @@ async def start_folder_transfer(
             started_at=time.time(),
             duration_seconds=0.0,
         )
-        _transfers[transfer_id] = state
+        _save(state)
         logger.info("Folder copy: no files found under drive=%s folder=%s", drive_id, folder_item_id)
         return state
     return await start_transfer(

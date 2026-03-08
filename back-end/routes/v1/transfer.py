@@ -3,10 +3,12 @@ from typing import Optional
 import httpx
 from fastapi import APIRouter, HTTPException, Header
 
-from models.transfer import TransferRequest, TransferState, FolderTransferRequest
+from models.transfer import TransferRequest, TransferState, TransferSummary, FolderTransferRequest
 from services.transfer_service import (
     start_transfer,
     get_transfer,
+    get_transfer_by_run_id,
+    list_transfers,
     start_folder_transfer,
     expand_folders_to_files,
     build_batches_for_response,
@@ -102,9 +104,23 @@ async def copy_folder(
         raise HTTPException(status_code=502, detail=detail) from e
 
 
-@router.get("/status/{transfer_id}", response_model=TransferState)
-async def status(transfer_id: str):
-    state = get_transfer(transfer_id)
+@router.get("/status/{id}", response_model=TransferState)
+async def status(id: str):
+    """
+    Get transfer status by transfer_id or run_id.
+    If id is numeric, treat as run_id (Databricks job run); otherwise treat as transfer_id.
+    """
+    if id.isdigit():
+        run_id = int(id)
+        state = get_transfer_by_run_id(run_id)
+    else:
+        state = get_transfer(id)
     if state is None:
         raise HTTPException(status_code=404, detail="Transfer not found")
     return _state_for_response(state)
+
+
+@router.get("", response_model=list[TransferSummary])
+async def list_transfers_route():
+    """List all transfers (high-level summary), most recent first."""
+    return list_transfers()

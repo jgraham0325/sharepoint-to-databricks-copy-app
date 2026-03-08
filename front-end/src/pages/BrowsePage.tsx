@@ -35,7 +35,7 @@ export default function BrowsePage() {
       ) : (
         <>
           <h2 className="mb-4" style={{ fontSize: "1.35rem", fontWeight: 600 }}>
-            File browser
+            Browse SharePoint
           </h2>
           <Row>
             <Col md={8}>

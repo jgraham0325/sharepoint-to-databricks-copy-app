@@ -13,6 +13,9 @@ front-end/dist/
 back-end/static/*
 !back-end/static/.gitkeep
 
+# SQLite database (transfer history)
+back-end/data/
+
 # Environment
 .env
 back-end/.env

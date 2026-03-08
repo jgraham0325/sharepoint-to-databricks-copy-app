@@ -1,10 +1,11 @@
 import { useState, useCallback, useEffect } from "react";
-import { Container, Row, Col, Card, Form, Button, Alert } from "react-bootstrap";
+import { Container, Row, Col, Card, Form, Button } from "react-bootstrap";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { DriveItem } from "../api/sharepoint";
 import type { FileTransferItem, FolderTransferItem } from "../api/transfer";
 import VolumeSelector from "../components/transfer/VolumeSelector";
 import TransferPanel from "../components/transfer/TransferPanel";
+import TransfersList from "../components/transfer/TransfersList";
 import { useTransfer } from "../hooks/useTransfer";
 
 const ACTIVE_TRANSFER_KEY = "sharepoint_upload_active_transfer";
@@ -21,6 +22,11 @@ export default function TransferPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const state = location.state as LocationState | null;
 
+  const hasSelection = !!(
+    state &&
+    ((state.files?.length ?? 0) > 0 || (state.folders?.length ?? 0) > 0)
+  );
+
   const [catalog, setCatalog] = useState("");
   const [schema, setSchema] = useState("");
   const [volume, setVolume] = useState("");
@@ -33,6 +39,16 @@ export default function TransferPage() {
   );
 
   useEffect(() => {
+    // New file selection takes priority — don't restore a stale transfer
+    if (hasSelection) {
+      setSyncedTransferId(null);
+      try {
+        sessionStorage.removeItem(ACTIVE_TRANSFER_KEY);
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
     if (transferIdFromUrl) {
       setSyncedTransferId(transferIdFromUrl);
       return;
@@ -55,7 +71,7 @@ export default function TransferPage() {
     } catch {
       setSyncedTransferId(null);
     }
-  }, [transferIdFromUrl, setSearchParams]);
+  }, [transferIdFromUrl, setSearchParams, hasSelection]);
 
   const clearPersistedTransferId = useCallback(() => {
     setSearchParams(
@@ -74,26 +90,30 @@ export default function TransferPage() {
     }
   }, [setSearchParams]);
 
-  const { transferState, isTransferring, beginTransfer } = useTransfer(
-    syncedTransferId,
-    clearPersistedTransferId
+  const syncTransferIdToUrl = useCallback(
+    (transferId: string) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.set("transfer_id", transferId);
+          return next;
+        },
+        { replace: true }
+      );
+      try {
+        sessionStorage.setItem(ACTIVE_TRANSFER_KEY, transferId);
+      } catch {
+        /* ignore */
+      }
+    },
+    [setSearchParams]
   );
 
-  // Persist transfer_id to URL and sessionStorage when a transfer is active
-  useEffect(() => {
-    const id = transferState?.transfer_id;
-    if (!id) return;
-    if (searchParams.get("transfer_id") !== id) {
-      const next = new URLSearchParams(searchParams);
-      next.set("transfer_id", id);
-      setSearchParams(next, { replace: true });
-    }
-    try {
-      sessionStorage.setItem(ACTIVE_TRANSFER_KEY, id);
-    } catch {
-      /* ignore */
-    }
-  }, [transferState?.transfer_id, searchParams, setSearchParams]);
+  const { transferState, isTransferring, beginTransfer } = useTransfer(
+    syncedTransferId,
+    clearPersistedTransferId,
+    syncTransferIdToUrl
+  );
 
   // Clear sessionStorage when transfer reaches terminal state (keep URL so panel still shows)
   useEffect(() => {
@@ -118,20 +138,23 @@ export default function TransferPage() {
     []
   );
 
-  const hasFiles = (state?.files?.length ?? 0) > 0;
-  const hasFolders = (state?.folders?.length ?? 0) > 0;
-  const hasSelection = state && (hasFiles || hasFolders);
-  const showTransferOnly = syncedTransferId && !hasSelection;
+  // Use URL as source of truth for list vs detail: no transfer_id in URL => list view
+  const showListView = !hasSelection && !transferIdFromUrl;
+  const showTransferOnly = transferIdFromUrl && !hasSelection;
 
-  if (!hasSelection && !syncedTransferId) {
+  if (showListView) {
     return (
       <Container className="page-content">
-        <Alert variant="info" className="mb-0">
-          No files or folders selected.{" "}
-          <Alert.Link onClick={() => navigate("/")}>
-            Go back to browse.
-          </Alert.Link>
-        </Alert>
+        <div className="d-flex justify-content-between align-items-center mb-3">
+          <h2 className="mb-0" style={{ fontSize: "1.35rem", fontWeight: 600 }}>
+            All Transfers
+          </h2>
+          <Button variant="primary" onClick={() => navigate("/")}>
+            <i className="bi bi-plus-lg me-1"></i>
+            New Transfer
+          </Button>
+        </div>
+        <TransfersList onStartTransfer={() => navigate("/")} />
       </Container>
     );
   }
@@ -139,13 +162,21 @@ export default function TransferPage() {
   if (showTransferOnly) {
     return (
       <Container className="page-content">
-        <div className="d-flex justify-content-between align-items-center mb-3">
+        <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
           <h2 className="mb-0" style={{ fontSize: "1.35rem", fontWeight: 600 }}>
-            Transfer to volume
+            Transfer Detail
           </h2>
-          <Button variant="outline-secondary" onClick={() => navigate("/")}>
-            <i className="bi bi-arrow-left me-1"></i>Back
-          </Button>
+          <div className="d-flex align-items-center gap-2">
+            <Button
+              variant="outline-secondary"
+              onClick={() => clearPersistedTransferId()}
+            >
+              <i className="bi bi-arrow-left me-1"></i>All Transfers
+            </Button>
+            <Button variant="primary" onClick={() => navigate("/")}>
+              <i className="bi bi-plus-lg me-1"></i>New Transfer
+            </Button>
+          </div>
         </div>
         <TransferPanel state={transferState} />
       </Container>
@@ -165,7 +196,8 @@ export default function TransferPage() {
     folder_name: f.name,
   }));
 
-  const canStart = catalog && schema && volume && !isTransferring;
+  const transferStarted = !!transferState;
+  const canStart = catalog && schema && volume && !isTransferring && !transferStarted;
 
   const startTransferHandler = () => {
     if (!canStart) return;
@@ -183,28 +215,30 @@ export default function TransferPage() {
     <Container className="page-content">
       <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
         <h2 className="mb-0" style={{ fontSize: "1.35rem", fontWeight: 600 }}>
-          Transfer to volume
+          {transferStarted ? "Transfer in Progress" : "New Transfer"}
         </h2>
         <div className="d-flex align-items-center gap-2">
+          {!transferStarted && (
+            <Button
+              variant="success"
+              disabled={!canStart}
+              onClick={startTransferHandler}
+            >
+              <i className="bi bi-cloud-upload me-2"></i>
+              Start Transfer
+            </Button>
+          )}
           <Button
-            variant="success"
-            disabled={!canStart}
-            onClick={startTransferHandler}
+            variant="outline-secondary"
+            onClick={() => {
+              clearPersistedTransferId();
+              navigate("/transfer", { replace: true });
+            }}
           >
-            {isTransferring ? (
-              <>
-                <span className="spinner-border spinner-border-sm me-2"></span>
-                Transferring...
-              </>
-            ) : (
-              <>
-                <i className="bi bi-cloud-upload me-2"></i>
-                Start Transfer
-              </>
-            )}
+            <i className="bi bi-arrow-left me-1"></i>All Transfers
           </Button>
           <Button variant="outline-secondary" onClick={() => navigate("/")}>
-            <i className="bi bi-arrow-left me-1"></i>Back
+            <i className="bi bi-folder2-open me-1"></i>Browse SharePoint
           </Button>
         </div>
       </div>
@@ -212,12 +246,15 @@ export default function TransferPage() {
       <Row>
         <Col md={6}>
           <Card body className="mb-3">
-            <h6 className="mb-3" style={{ fontWeight: 600 }}>To transfer</h6>
+            <h6 className="mb-3" style={{ fontWeight: 600 }}>
+              <i className="bi bi-microsoft text-primary me-2"></i>
+              SharePoint Source
+            </h6>
             <ul className="list-unstyled mb-0">
               {folders.map((f) => (
                 <li key={f.folder_item_id} className="py-1">
                   <i className="bi bi-folder-fill text-warning me-2"></i>
-                  {f.folder_name} <small className="text-muted">(folder + hierarchy)</small>
+                  {f.folder_name} <small className="text-muted">(folder + contents)</small>
                 </li>
               ))}
               {files.map((f) => (
@@ -231,22 +268,63 @@ export default function TransferPage() {
         </Col>
 
         <Col md={6}>
-          <Card body className="mb-3">
-            <VolumeSelector onSelect={handleVolumeSelect} />
+          {!transferStarted && (
+            <Card body className="mb-3">
+              <h6 className="mb-3" style={{ fontWeight: 600 }}>
+                <i className="bi bi-database me-2" style={{ color: "var(--color-accent)" }}></i>
+                Databricks Destination
+              </h6>
+              <VolumeSelector onSelect={handleVolumeSelect} />
 
-            <Form.Group className="mt-3">
-              <Form.Label className="small">
-                Subfolder (optional)
-              </Form.Label>
-              <Form.Control
-                placeholder="e.g. imports/2024"
-                value={subfolder}
-                onChange={(e) => setSubfolder(e.target.value)}
-              />
-            </Form.Group>
-          </Card>
+              <Form.Group className="mt-3">
+                <Form.Label className="small">
+                  Subfolder (optional)
+                </Form.Label>
+                <Form.Control
+                  placeholder="e.g. imports/2024"
+                  value={subfolder}
+                  onChange={(e) => setSubfolder(e.target.value)}
+                />
+              </Form.Group>
+            </Card>
+          )}
+
+          {transferStarted && (
+            <Card body className="mb-3">
+              <h6 className="mb-3" style={{ fontWeight: 600 }}>
+                <i className="bi bi-database me-2" style={{ color: "var(--color-accent)" }}></i>
+                Databricks Destination
+              </h6>
+              <p className="small text-muted mb-0">
+                <code>{catalog}.{schema}.{volume}</code>
+                {subfolder && <span> / {subfolder}</span>}
+              </p>
+            </Card>
+          )}
 
           <TransferPanel state={transferState} />
+
+          {transferStarted && (
+            <Card body className="mt-3 text-center">
+              <p className="text-muted small mb-3">
+                This transfer is running in the background. You can safely navigate away.
+              </p>
+              <div className="d-flex justify-content-center gap-2">
+                <Button variant="primary" onClick={() => navigate("/")}>
+                  <i className="bi bi-plus-lg me-1"></i>Transfer More Files
+                </Button>
+                <Button
+                  variant="outline-secondary"
+                  onClick={() => {
+                    clearPersistedTransferId();
+                    navigate("/transfer", { replace: true });
+                  }}
+                >
+                  <i className="bi bi-list-ul me-1"></i>View All Transfers
+                </Button>
+              </div>
+            </Card>
+          )}
         </Col>
       </Row>
     </Container>

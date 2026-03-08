@@ -183,7 +183,7 @@ Ensure the `sharepoint-transfer` job is deployed (it is defined in `databricks.y
 - **SharePoint listing** follows `@odata.nextLink` so folders with more than 200 direct children are fully enumerated.
 - **Download URL resolution** uses bounded concurrency to avoid throttling.
 - **Transfer results** are capped in memory (`MAX_TRANSFER_RESULTS_IN_MEMORY`, default 500); the UI shows a summary and the capped list.
-- The job has `max_concurrent_runs: 20` in `databricks.yml`.
+- The job has `max_concurrent_runs: 3` in `databricks.yml` so up to three transfers can run concurrently; additional runs queue.
 
 ## Project Structure
 
@@ -228,7 +228,8 @@ sharepoint-upload-app/
 | `GET` | `/api/v1/sharepoint/drives/{id}/children` | List folder contents |
 | `POST` | `/api/v1/transfer/start` | Start file transfer to Volume |
 | `POST` | `/api/v1/transfer/copy-folder` | **Agent-friendly:** Copy entire SharePoint folder (recursively) to a volume |
-| `GET` | `/api/v1/transfer/status/{id}` | Poll transfer progress |
+| `GET` | `/api/v1/transfer` | List all transfers (high-level summary), most recent first |
+| `GET` | `/api/v1/transfer/status/{id}` | Poll transfer progress (`id` is transfer_id or Databricks run_id) |
 | `GET` | `/api/v1/volumes/catalogs` | List Unity Catalog catalogs |
 | `GET` | `/api/v1/volumes/catalogs/{c}/schemas` | List schemas |
 | `GET` | `/api/v1/volumes/catalogs/{c}/schemas/{s}/volumes` | List volumes |

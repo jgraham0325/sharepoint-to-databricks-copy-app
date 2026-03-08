@@ -21,13 +21,15 @@ function AppBar() {
           end
           className={({ isActive }) => `app-bar__link ${isActive ? "app-bar__link--active" : ""}`}
         >
-          Browse
+          <i className="bi bi-folder2-open me-1"></i>
+          Browse SharePoint
         </NavLink>
         <NavLink
           to="/transfer"
           className={({ isActive }) => `app-bar__link ${isActive ? "app-bar__link--active" : ""}`}
         >
-          Transfer
+          <i className="bi bi-arrow-left-right me-1"></i>
+          Transfers
         </NavLink>
         <NavLink
           to="/agent"

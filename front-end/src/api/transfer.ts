@@ -91,6 +91,23 @@ export interface TransferState {
   results_truncated?: boolean;
 }
 
+/** High-level summary for list view (no per-file results). */
+export interface TransferSummary {
+  transfer_id: string;
+  status: TransferStatus;
+  total: number;
+  completed: number;
+  failed: number;
+  run_ids?: number[] | null;
+  started_at?: number | null;
+  duration_seconds?: number | null;
+  job_run_url?: string | null;
+}
+
+export function listTransfers(): Promise<TransferSummary[]> {
+  return apiFetch("/api/v1/transfer");
+}
+
 export function startTransfer(req: TransferRequest): Promise<TransferState> {
   return apiFetch("/api/v1/transfer/start", {
     method: "POST",

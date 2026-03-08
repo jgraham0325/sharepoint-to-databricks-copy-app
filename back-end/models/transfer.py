@@ -77,6 +77,19 @@ class TransferBatch(BaseModel):
     file_names: List[str] = []  # files in this batch only
 
 
+class TransferSummary(BaseModel):
+    """High-level summary for list view; no per-file results."""
+    transfer_id: str
+    status: TransferStatus
+    total: int
+    completed: int
+    failed: int
+    run_ids: Optional[List[int]] = None
+    started_at: Optional[float] = None
+    duration_seconds: Optional[float] = None
+    job_run_url: Optional[str] = None
+
+
 class TransferState(BaseModel):
     transfer_id: str
     status: TransferStatus

@@ -16,7 +16,8 @@ function isNotFoundError(err: unknown): boolean {
 
 export function useTransfer(
   initialTransferId: string | null,
-  onTransferNotFound?: () => void
+  onTransferNotFound?: () => void,
+  onTransferStarted?: (transferId: string) => void
 ) {
   const [transferState, setTransferState] = useState<TransferState | null>(
     null
@@ -98,7 +99,12 @@ export function useTransfer(
 
   // Rehydrate from initialTransferId (URL or sessionStorage)
   useEffect(() => {
-    if (!initialTransferId) return;
+    if (!initialTransferId) {
+      stopPolling();
+      setTransferState(null);
+      setIsTransferring(false);
+      return;
+    }
     if (transferState?.transfer_id === initialTransferId) {
       return; // already have this state (and polling if in progress)
     }
@@ -187,13 +193,14 @@ export function useTransfer(
       try {
         const state = await startTransfer(req);
         setTransferState(state);
+        onTransferStarted?.(state.transfer_id);
         startPolling(state.transfer_id);
       } catch (err: any) {
         toast.error(err.message);
         setIsTransferring(false);
       }
     },
-    [startPolling]
+    [startPolling, onTransferStarted]
   );
 
   return { transferState, isTransferring, beginTransfer };
