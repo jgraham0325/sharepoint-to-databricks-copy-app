@@ -26,18 +26,69 @@ from models.transfer import (
     TransferStatus,
     FileResult,
     JobRunStatus,
+    TaskIterationStatus,
+    TransferBatch,
 )
 from services.sharepoint_service import list_all_files_in_folder
 from services.job_service import (
+    get_run_for_each_iterations,
     get_run_statuses,
     get_transfer_job_id,
-    submit_transfer_via_manifest,
+    submit_transfer_via_manifests,
 )
 
 logger = get_logger(__name__)
 
 # In-memory transfer tracking (single-instance app)
 _transfers: Dict[str, TransferState] = {}
+
+
+def build_batches_for_response(state: TransferState) -> Optional[List[TransferBatch]]:
+    """
+    Build iteration-centric batches (status + file list per batch) for API response.
+    Used when a single run processes all files via For Each; requires task_iterations,
+    batch_file_counts, and the full file list from run_id_to_file.
+    """
+    if not state.run_ids or len(state.run_ids) != 1 or not state.run_id_to_file:
+        return None
+    names = state.run_id_to_file.get(str(state.run_ids[0]), [])
+    if isinstance(names, str):
+        names = [names]
+    counts = state.batch_file_counts
+    iterations = state.task_iterations
+    if not counts or not iterations or sum(counts) != len(names):
+        return None
+    by_index = {it.index: it for it in iterations}
+    batches: List[TransferBatch] = []
+    offset = 0
+    for i in range(len(counts)):
+        n = counts[i]
+        batch_names = names[offset : offset + n]
+        offset += n
+        it = by_index.get(i)
+        if it is None:
+            batches.append(
+                TransferBatch(
+                    index=i,
+                    life_cycle_state="PENDING",
+                    result_state="",
+                    state_message="",
+                    file_count=n,
+                    file_names=batch_names,
+                )
+            )
+        else:
+            batches.append(
+                TransferBatch(
+                    index=it.index,
+                    life_cycle_state=it.life_cycle_state,
+                    result_state=it.result_state or "",
+                    state_message=it.state_message or "",
+                    file_count=n,
+                    file_names=batch_names,
+                )
+            )
+    return batches
 
 
 def get_transfer(transfer_id: str) -> Optional[TransferState]:
@@ -88,7 +139,7 @@ def _append_result(state: TransferState, result: FileResult) -> None:
 def _sync_state_from_job_runs(state: TransferState) -> None:
     """
     Poll job run statuses and incrementally update state: merge outcomes for each run as it
-    terminates, update job_run_statuses for UI, and set final status when all runs are done.
+    terminates, update job_run_statuses and task_iterations for UI, and set final status when all runs are done.
     """
     if not state.run_ids or not state.run_id_to_file:
         return
@@ -96,6 +147,84 @@ def _sync_state_from_job_runs(state: TransferState) -> None:
     statuses = get_run_statuses(state.run_ids)
     # Build map run_id -> (life_cycle, result_state, state_message)
     status_by_run = {run_id: (lc, res, msg) for run_id, lc, res, msg in statuses}
+    # For Each iterations: fetch from first run (we have a single run per transfer now).
+    # Note: Databricks may only return running/completed iterations, not queued ones.
+    if len(state.run_ids) == 1:
+        run_id = state.run_ids[0]
+        raw_iterations = get_run_for_each_iterations(run_id)
+        # Use API order as-is (run.iterations is typically in input/manifest order; sorting by start_time
+        # put completed-first iterations first and broke the batch index mapping).
+        state.task_iterations = [
+            TaskIterationStatus(
+                index=i,
+                life_cycle_state=it.get("life_cycle_state", "PENDING"),
+                result_state=it.get("result_state", ""),
+                state_message=it.get("state_message", ""),
+            )
+            for i, it in enumerate(raw_iterations)
+        ]
+        logger.info(
+            "transfer_sync: transfer_id=%s run_id=%s raw_iterations=%s total_iterations=%s total=%s task_iterations(len)=%s",
+            state.transfer_id,
+            run_id,
+            len(raw_iterations),
+            state.total_iterations,
+            state.total,
+            len(state.task_iterations or []),
+        )
+        # Estimate completed/failed from iterations so progress bar updates before run terminates.
+        # Use actual file counts per batch when batch_file_counts is set; otherwise fall back to average.
+        if (
+            state.task_iterations
+            and state.total_iterations is not None
+            and state.total_iterations > 0
+            and state.total > 0
+        ):
+            counts = state.batch_file_counts
+            if counts and len(counts) >= len(state.task_iterations):
+                completed_from_iterations = sum(
+                    counts[it.index] for it in state.task_iterations if it.result_state == "SUCCESS"
+                )
+                failed_from_iterations = sum(
+                    counts[it.index] for it in state.task_iterations if it.result_state == "FAILED"
+                )
+                state.completed = min(completed_from_iterations, state.total)
+                state.failed = min(failed_from_iterations, state.total - state.completed)
+                logger.info(
+                    "transfer_sync: transfer_id=%s progress from iterations (batch counts) -> completed=%s failed=%s",
+                    state.transfer_id,
+                    state.completed,
+                    state.failed,
+                )
+            else:
+                success_count = sum(1 for it in state.task_iterations if it.result_state == "SUCCESS")
+                failed_count = sum(1 for it in state.task_iterations if it.result_state == "FAILED")
+                files_per_iteration = state.total // state.total_iterations
+                if files_per_iteration > 0:
+                    state.completed = min(success_count * files_per_iteration, state.total)
+                    state.failed = min(failed_count * files_per_iteration, state.total - state.completed)
+                    logger.info(
+                        "transfer_sync: transfer_id=%s progress from iterations (average) success_count=%s failed_count=%s files_per_iteration=%s -> completed=%s failed=%s",
+                        state.transfer_id,
+                        success_count,
+                        failed_count,
+                        files_per_iteration,
+                        state.completed,
+                        state.failed,
+                    )
+                else:
+                    logger.info(
+                        "transfer_sync: transfer_id=%s skipped progress update (files_per_iteration=0)",
+                        state.transfer_id,
+                    )
+        else:
+            logger.info(
+                "transfer_sync: transfer_id=%s not updating progress from iterations (task_iterations=%s total_iterations=%s total=%s)",
+                state.transfer_id,
+                bool(state.task_iterations),
+                state.total_iterations,
+                state.total,
+            )
     # Ensure job_run_statuses list exists and is indexed by current run_ids order
     if state.job_run_statuses is None:
         state.job_run_statuses = []
@@ -123,17 +252,58 @@ def _sync_state_from_job_runs(state: TransferState) -> None:
         if lc in ("TERMINATED", "SKIPPED", "INTERNAL_ERROR"):
             js.status = "success" if result_state == "SUCCESS" else "failed"
             js.error = None if result_state == "SUCCESS" else (state_message or "Job task failed")
-            # Merge this run's outcomes into results and remove from pending
-            for name in names:
-                if result_state == "SUCCESS":
-                    state.completed += 1
-                    _append_result(state, FileResult(name=name, status=TransferStatus.COMPLETED))
+            # Set completed/failed and results. For single run with For Each: use per-iteration outcomes
+            # so each file gets the status of its batch; otherwise apply run-level outcome to all files.
+            if names:
+                state.completed = 0
+                state.failed = 0
+                state.results = []
+                counts = state.batch_file_counts
+                iterations = state.task_iterations
+                if (
+                    len(state.run_ids) == 1
+                    and counts
+                    and iterations
+                    and len(counts) >= len(iterations)
+                    and sum(counts) == len(names)
+                ):
+                    # Per-batch: names are in batch order (batch 0, then batch 1, ...)
+                    by_index = {it.index: it for it in iterations}
+                    offset = 0
+                    for i in range(len(counts)):
+                        batch_size = counts[i]
+                        batch_names = names[offset : offset + batch_size]
+                        offset += batch_size
+                        it = by_index.get(i)
+                        if it is None:
+                            for name in batch_names:
+                                state.failed += 1
+                                _append_result(
+                                    state,
+                                    FileResult(name=name, status=TransferStatus.FAILED, error="Unknown batch status"),
+                                )
+                            continue
+                        file_status = TransferStatus.COMPLETED if it.result_state == "SUCCESS" else TransferStatus.FAILED
+                        err = None if it.result_state == "SUCCESS" else (it.state_message or "Batch failed")
+                        for name in batch_names:
+                            if it.result_state == "SUCCESS":
+                                state.completed += 1
+                                _append_result(state, FileResult(name=name, status=TransferStatus.COMPLETED))
+                            else:
+                                state.failed += 1
+                                _append_result(state, FileResult(name=name, status=TransferStatus.FAILED, error=err))
                 else:
-                    state.failed += 1
-                    _append_result(
-                        state,
-                        FileResult(name=name, status=TransferStatus.FAILED, error=state_message or "Job task failed"),
-                    )
+                    # Run-level outcome for all files (no per-iteration breakdown or multi-run)
+                    for name in names:
+                        if result_state == "SUCCESS":
+                            state.completed += 1
+                            _append_result(state, FileResult(name=name, status=TransferStatus.COMPLETED))
+                        else:
+                            state.failed += 1
+                            _append_result(
+                                state,
+                                FileResult(name=name, status=TransferStatus.FAILED, error=state_message or "Job task failed"),
+                            )
         else:
             # PENDING, QUEUED, BLOCKED, WAITING_FOR_RETRY = queued; RUNNING, TERMINATING = running
             js.status = "queued" if lc in ("PENDING", "QUEUED", "BLOCKED", "WAITING_FOR_RETRY") else "running"
@@ -329,11 +499,13 @@ async def _execute_transfer(
         return
 
     chunk_size = config.FILES_PER_MANIFEST_CHUNK
-    run_ids: List[int] = []
-    run_id_to_file: Dict[str, List[str]] = {}
+    manifest_paths: List[str] = []
+    batch_file_counts: List[int] = []
+    all_file_names: List[str] = []
 
     for chunk_index in range(0, len(job_items), chunk_size):
         chunk = job_items[chunk_index : chunk_index + chunk_size]
+        batch_file_counts.append(len(chunk))
         manifest = [
             {
                 "drive_id": f.drive_id,
@@ -346,44 +518,47 @@ async def _execute_transfer(
         manifest_bytes = json.dumps(manifest).encode("utf-8")
         upload_to_volume(ws_client, catalog, schema_name, volume, manifest_path_in_volume, manifest_bytes)
         full_manifest_path = f"{full_volume_base}/{manifest_path_in_volume}"
+        manifest_paths.append(full_manifest_path)
+        all_file_names.extend(f.name for f, _ in chunk)
 
+    if manifest_paths:
         run_id = await asyncio.to_thread(
-            submit_transfer_via_manifest,
+            submit_transfer_via_manifests,
             ms_token,
-            full_manifest_path,
-            f"chunk {chunk_index}",
+            manifest_paths,
+            task_label="bulk",
             ms_refresh_token=ms_refresh_token,
             user_oid=user_oid,
         )
-        file_names = [f.name for f, _ in chunk]
         if run_id is not None:
-            run_ids.append(run_id)
-            run_id_to_file[str(run_id)] = file_names
+            state.run_ids = [run_id]
+            state.run_id_to_file = {str(run_id): all_file_names}
+            host = (config.DATABRICKS_HOST or "").rstrip("/")
+            if host and job_id:
+                job_run_url = f"{host}#job/{job_id}/run/{run_id}"
+                state.job_run_urls = [job_run_url]
+                state.job_run_url = job_run_url
+            else:
+                state.job_run_urls = None
+                state.job_run_url = None
+            state.job_run_statuses = [
+                JobRunStatus(
+                    run_id=run_id,
+                    url=state.job_run_url,
+                    status="queued",
+                    file_names=all_file_names,
+                )
+            ]
+            state.task_iterations = []
+            state.total_iterations = len(manifest_paths)
+            state.batch_file_counts = batch_file_counts
         else:
-            for name in file_names:
+            for name in all_file_names:
                 state.failed += 1
                 _append_result(
                     state,
                     FileResult(name=name, status=TransferStatus.FAILED, error=job_not_found_msg),
                 )
-
-    if run_ids:
-        state.run_ids = run_ids
-        state.run_id_to_file = run_id_to_file
-        host = (config.DATABRICKS_HOST or "").rstrip("/")
-        if host and job_id:
-            state.job_run_urls = [f"{host}#job/{job_id}/run/{rid}" for rid in run_ids]
-        else:
-            state.job_run_urls = None
-        state.job_run_statuses = [
-            JobRunStatus(
-                run_id=rid,
-                url=state.job_run_urls[i] if state.job_run_urls and i < len(state.job_run_urls) else None,
-                status="queued",
-                file_names=run_id_to_file.get(str(rid), []),
-            )
-            for i, rid in enumerate(run_ids)
-        ]
 
     # Sync outcomes from job runs is done in get_transfer via _sync_state_from_job_runs; use _append_result there too
     if not state.run_ids:

@@ -9,6 +9,7 @@ from services.transfer_service import (
     get_transfer,
     start_folder_transfer,
     expand_folders_to_files,
+    build_batches_for_response,
 )
 
 router = APIRouter(prefix="/transfer")
@@ -18,6 +19,26 @@ def _require_token(x_ms_token: Optional[str]) -> str:
     if not x_ms_token:
         raise HTTPException(status_code=401, detail="Missing X-MS-Token header")
     return x_ms_token
+
+
+def _state_for_response(state: TransferState) -> TransferState:
+    """
+    Response shape for single-run For Each: iteration-centric.
+    - Populate batches (status + file list per batch); omit run_id_to_file.
+    - For single run, job_run_statuses entry keeps run_id/url/status but drops file_names (use batches).
+    """
+    if not state.run_ids or len(state.run_ids) != 1:
+        return state
+    batches = build_batches_for_response(state)
+    updates = {"run_id_to_file": None}
+    if batches is not None:
+        updates["batches"] = batches
+        if state.job_run_statuses and len(state.job_run_statuses) >= 1:
+            js = state.job_run_statuses[0]
+            updates["job_run_statuses"] = [
+                js.model_copy(update={"file_names": []}),  # file list lives in batches
+            ]
+    return state.model_copy(update=updates)
 
 
 @router.post("/start", response_model=TransferState)
@@ -40,7 +61,7 @@ async def start(
         ms_token=token,
         ms_refresh_token=x_ms_refresh_token,
     )
-    return state
+    return _state_for_response(state)
 
 
 @router.post("/copy-folder", response_model=TransferState)
@@ -57,7 +78,7 @@ async def copy_folder(
     """
     token = _require_token(x_ms_token)
     try:
-        return await start_folder_transfer(
+        state = await start_folder_transfer(
             drive_id=body.drive_id,
             folder_item_id=body.folder_item_id,
             catalog=body.catalog,
@@ -67,6 +88,7 @@ async def copy_folder(
             ms_token=token,
             ms_refresh_token=x_ms_refresh_token,
         )
+        return _state_for_response(state)
     except httpx.HTTPStatusError as e:
         status_code = e.response.status_code if e.response else 502
         detail = f"Microsoft Graph API error: {status_code}"
@@ -85,4 +107,4 @@ async def status(transfer_id: str):
     state = get_transfer(transfer_id)
     if state is None:
         raise HTTPException(status_code=404, detail="Transfer not found")
-    return state
+    return _state_for_response(state)

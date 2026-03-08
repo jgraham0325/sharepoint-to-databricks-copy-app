@@ -147,9 +147,6 @@ export default function TransferPage() {
             <i className="bi bi-arrow-left me-1"></i>Back
           </Button>
         </div>
-        <Alert variant="secondary" className="mb-3">
-          Transfer in progress (list of files not available after refresh).
-        </Alert>
         <TransferPanel state={transferState} />
       </Container>
     );

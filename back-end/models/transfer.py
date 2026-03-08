@@ -59,6 +59,24 @@ class JobRunStatus(BaseModel):
     error: Optional[str] = None
 
 
+class TaskIterationStatus(BaseModel):
+    """Status of one For Each iteration (transfer task). Uses Databricks naming."""
+    index: int  # 0-based iteration index
+    life_cycle_state: str  # PENDING, QUEUED, RUNNING, TERMINATED, SKIPPED, INTERNAL_ERROR, etc.
+    result_state: str = ""  # SUCCESS, FAILED, etc. (when terminated)
+    state_message: str = ""
+
+
+class TransferBatch(BaseModel):
+    """One For Each batch: status and the files in that batch (iteration-centric, not run-level)."""
+    index: int  # 0-based batch index
+    life_cycle_state: str
+    result_state: str = ""
+    state_message: str = ""
+    file_count: int  # len(file_names)
+    file_names: List[str] = []  # files in this batch only
+
+
 class TransferState(BaseModel):
     transfer_id: str
     status: TransferStatus
@@ -77,8 +95,18 @@ class TransferState(BaseModel):
     run_id_to_file: Optional[dict] = None
     # Links to Databricks job run UI (set when job runs are submitted; kept for display after completion)
     job_run_urls: Optional[List[str]] = None
+    # Single job run URL when using one run with For Each (preferred for display)
+    job_run_url: Optional[str] = None
     # Per-job-run status for incremental UI updates (running / success / failed)
     job_run_statuses: Optional[List[JobRunStatus]] = None
+    # For Each task iteration statuses (transfer task per manifest); Databricks life_cycle_state / result_state
+    task_iterations: Optional[List[TaskIterationStatus]] = None
+    # Number of For Each iterations (manifest chunks) for progress estimation; set when job is submitted
+    total_iterations: Optional[int] = None
+    # File count per batch (same order as task_iterations / manifest_paths); set when job is submitted
+    batch_file_counts: Optional[List[int]] = None
+    # Batches: status + file list per For Each iteration (canonical for iteration-level status; built for response)
+    batches: Optional[List[TransferBatch]] = None
     # Timing: set when transfer starts and when it finishes
     started_at: Optional[float] = None  # Unix timestamp
     duration_seconds: Optional[float] = None  # Elapsed time when finished

@@ -1,8 +1,9 @@
 import { useState, useMemo, useRef, useEffect } from "react";
 import { ProgressBar, ListGroup, Badge, Alert, Button } from "react-bootstrap";
-import type { TransferState, JobRunStatus, FileResult } from "../../api/transfer";
+import type { TransferState, JobRunStatus, FileResult, TaskIterationStatus, TransferBatch } from "../../api/transfer";
 
 const INITIAL_VISIBLE_FILES = 10;
+const MAX_VISIBLE_FILES_EXPANDED = 500;
 
 interface Props {
   state: TransferState | null;
@@ -21,19 +22,58 @@ function statusBadge(status: string) {
   }
 }
 
-function JobRunStatusBadge({ status }: { status: "queued" | "running" | "success" | "failed" }) {
-  switch (status) {
-    case "success":
-      return <Badge bg="success">Success</Badge>;
-    case "failed":
-      return <Badge bg="danger">Failed</Badge>;
-    case "queued":
-      return <Badge bg="secondary">Queued</Badge>;
-    case "running":
-      return <Badge bg="primary">Running</Badge>;
-    default:
-      return <Badge bg="secondary">{status}</Badge>;
-  }
+function JobRunStatusBadge({
+  status,
+  className,
+}: {
+  status: "queued" | "running" | "success" | "failed";
+  className?: string;
+}) {
+  const badge = (() => {
+    switch (status) {
+      case "success":
+        return <Badge bg="success">Success</Badge>;
+      case "failed":
+        return <Badge bg="danger">Failed</Badge>;
+      case "queued":
+        return <Badge bg="secondary">Queued</Badge>;
+      case "running":
+        return <Badge bg="primary">Running</Badge>;
+      default:
+        return <Badge bg="secondary">{status}</Badge>;
+    }
+  })();
+  return className ? <span className={className}>{badge}</span> : badge;
+}
+
+/** Databricks naming: life_cycle_state (PENDING, QUEUED, RUNNING, TERMINATED, …) and result_state (SUCCESS, FAILED). */
+function TaskIterationStatusBadge({ iteration }: { iteration: TaskIterationStatus }) {
+  const { life_cycle_state, result_state } = iteration;
+  const terminal = ["TERMINATED", "SKIPPED", "INTERNAL_ERROR"].includes(life_cycle_state);
+  const display = terminal && result_state ? result_state : life_cycle_state;
+  const variant =
+    display === "SUCCESS"
+      ? "success"
+      : display === "FAILED" || display === "INTERNAL_ERROR"
+        ? "danger"
+        : display === "RUNNING" || display === "TERMINATING"
+          ? "primary"
+          : "secondary";
+  return <Badge bg={variant}>{display}</Badge>;
+}
+
+/** Badge for a batch (same semantics as TaskIterationStatus). */
+function BatchStatusBadge({ batch }: { batch: TransferBatch }) {
+  return (
+    <TaskIterationStatusBadge
+      iteration={{
+        index: batch.index,
+        life_cycle_state: batch.life_cycle_state,
+        result_state: batch.result_state,
+        state_message: batch.state_message,
+      }}
+    />
+  );
 }
 
 function formatDuration(seconds: number): string {
@@ -70,6 +110,7 @@ export default function TransferPanel({ state }: Props) {
   const [analysisComplete, setAnalysisComplete] = useState(false);
   const [resultsExpanded, setResultsExpanded] = useState(false);
   const [failedExpanded, setFailedExpanded] = useState(false);
+  const [fileNamesExpanded, setFileNamesExpanded] = useState(false);
   const [, setTick] = useState(0);
   const startTimeRef = useRef<{ transferId: string; startTime: number } | null>(null);
 
@@ -83,24 +124,34 @@ export default function TransferPanel({ state }: Props) {
     return () => clearInterval(interval);
   }, [inProgress, state?.transfer_id]);
 
-  const { failedResults, successResults } = useMemo(() => {
+  const { failedResults, successResults, fileNamesFromBatchesOrJob } = useMemo(() => {
     const results = state?.results ?? [];
     const failed = results.filter((r) => r.status === "failed" || r.error);
     const success = results.filter((r) => r.status !== "failed" && !r.error);
-    return { failedResults: failed, successResults: success };
-  }, [state?.results]);
+    const fileNames =
+      (state?.batches?.length
+        ? state.batches.flatMap((b) => b.file_names)
+        : state?.job_run_statuses?.[0]?.file_names) ?? [];
+    return { failedResults: failed, successResults: success, fileNamesFromBatchesOrJob: fileNames };
+  }, [state?.results, state?.batches, state?.job_run_statuses]);
 
   const visibleFailedCount = failedExpanded
-    ? failedResults.length
+    ? Math.min(MAX_VISIBLE_FILES_EXPANDED, failedResults.length)
     : Math.min(INITIAL_VISIBLE_FILES, failedResults.length);
-  const hiddenFailedCount = failedResults.length - visibleFailedCount;
   const canExpandOrCollapseFailed = failedResults.length > INITIAL_VISIBLE_FILES;
 
   const visibleSuccessCount = resultsExpanded
-    ? successResults.length
+    ? Math.min(MAX_VISIBLE_FILES_EXPANDED, successResults.length)
     : Math.min(INITIAL_VISIBLE_FILES, successResults.length);
-  const hiddenSuccessCount = successResults.length - visibleSuccessCount;
   const canExpandOrCollapse = successResults.length > INITIAL_VISIBLE_FILES;
+
+  const visibleFileNamesCount = fileNamesExpanded
+    ? Math.min(MAX_VISIBLE_FILES_EXPANDED, fileNamesFromBatchesOrJob.length)
+    : Math.min(INITIAL_VISIBLE_FILES, fileNamesFromBatchesOrJob.length);
+  const canExpandOrCollapseFileNames = fileNamesFromBatchesOrJob.length > INITIAL_VISIBLE_FILES;
+  const moreFileNamesCount = Math.min(MAX_VISIBLE_FILES_EXPANDED, fileNamesFromBatchesOrJob.length) - visibleFileNamesCount;
+  const moreSuccessCount = Math.min(MAX_VISIBLE_FILES_EXPANDED, successResults.length) - visibleSuccessCount;
+  const moreFailedCount = Math.min(MAX_VISIBLE_FILES_EXPANDED, failedResults.length) - visibleFailedCount;
 
   if (!state) return null;
 
@@ -173,7 +224,7 @@ export default function TransferPanel({ state }: Props) {
         </Alert>
       )}
 
-      {state.results.length > 0 && (
+      {(state.results.length > 0 || fileNamesFromBatchesOrJob.length > 0) && (
         <>
           {failedResults.length > 0 && (
             <div className="mb-2">
@@ -197,7 +248,7 @@ export default function TransferPanel({ state }: Props) {
                 >
                   {failedExpanded
                     ? "Show less"
-                    : `Show ${hiddenFailedCount} more`}
+                    : `Show ${moreFailedCount} more`}
                 </Button>
               )}
             </div>
@@ -224,7 +275,36 @@ export default function TransferPanel({ state }: Props) {
                 >
                   {resultsExpanded
                     ? "Show less"
-                    : `Show ${hiddenSuccessCount} more`}
+                    : `Show ${moreSuccessCount} more`}
+                </Button>
+              )}
+            </div>
+          )}
+          {state.results.length === 0 && fileNamesFromBatchesOrJob.length > 0 && (
+            <div className="mb-1">
+              <p className="text-muted small mb-1">
+                Files in this transfer ({fileNamesFromBatchesOrJob.length})
+              </p>
+              <ListGroup className="mb-1">
+                {fileNamesFromBatchesOrJob
+                  .slice(0, visibleFileNamesCount)
+                  .map((name, i) => (
+                    <ListGroup.Item key={`file-${i}`} className="py-1 small">
+                      <i className="bi bi-file-earmark me-2 text-muted"></i>
+                      {name}
+                    </ListGroup.Item>
+                  ))}
+              </ListGroup>
+              {canExpandOrCollapseFileNames && (
+                <Button
+                  variant="outline-secondary"
+                  size="sm"
+                  className="mt-1"
+                  onClick={() => setFileNamesExpanded((e) => !e)}
+                >
+                  {fileNamesExpanded
+                    ? "Show less"
+                    : `Show ${moreFileNamesCount} more`}
                 </Button>
               )}
             </div>
@@ -283,43 +363,133 @@ export default function TransferPanel({ state }: Props) {
           </Alert>
         )}
 
-      {(state.job_run_statuses?.length ?? 0) > 0 && (
+      {(!!state.job_run_url || (state.job_run_statuses?.length ?? 0) > 0) && (
         <Alert variant="light" className="mt-3 py-2">
           <i className="bi bi-diagram-3 me-2"></i>
-          <strong className="me-2">Databricks job runs:</strong>
-          <ListGroup variant="flush" className="mt-2">
-            {state.job_run_statuses!.map((job: JobRunStatus, i: number) => (
-              <ListGroup.Item
-                key={job.run_id}
-                className="d-flex justify-content-between align-items-center px-0 py-1 border-0"
+          <strong className="me-2">Databricks job:</strong>
+          {state.job_run_statuses?.[0]?.status != null && (
+            <JobRunStatusBadge status={state.job_run_statuses[0].status} className="me-2" />
+          )}
+          <span className="d-flex align-items-center gap-2 flex-wrap">
+            {(state.job_run_url ?? state.job_run_statuses?.[0]?.url) && (
+              <a
+                href={state.job_run_url ?? state.job_run_statuses![0].url ?? "#"}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="alert-link small"
               >
-                <span className="d-flex align-items-center gap-2 flex-wrap">
-                  <JobRunStatusBadge status={job.status} />
-                  <span className="small text-muted">
-                    Run {i + 1}
-                    {job.file_names.length > 0 && (
-                      <span className="ms-1">
-                        ({job.file_names.length} file{job.file_names.length !== 1 ? "s" : ""})
-                      </span>
-                    )}
-                  </span>
-                  {job.error && (
-                    <small className="text-danger">{job.error}</small>
-                  )}
+                Open run in Databricks
+              </a>
+            )}
+            {(() => {
+              const n =
+                (state.batches?.length ? state.batches.reduce((s, b) => s + b.file_count, 0) : null) ??
+                state.job_run_statuses?.[0]?.file_names?.length ??
+                0;
+              return n > 0 ? (
+                <span className="small text-muted">
+                  ({n} file{n !== 1 ? "s" : ""})
                 </span>
-                {job.url && (
-                  <a
-                    href={job.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="alert-link small"
+              ) : null;
+            })()}
+          </span>
+          {(state.batches?.length ?? 0) > 0 ? (
+            <>
+              <div className="small text-muted mt-2 mb-1">Batches</div>
+              <ListGroup variant="flush" className="mt-1">
+                {state.batches!.map((batch, displayIndex) => (
+                  <ListGroup.Item
+                    key={batch.index}
+                    className="d-flex justify-content-between align-items-center px-0 py-1 border-0"
                   >
-                    Open in Databricks
-                  </a>
-                )}
-              </ListGroup.Item>
-            ))}
-          </ListGroup>
+                    <span className="d-flex align-items-center gap-2 flex-wrap">
+                      <BatchStatusBadge batch={batch} />
+                      <span className="small text-muted">
+                        Batch {displayIndex + 1}{" "}
+                        ({batch.file_count} file{batch.file_count !== 1 ? "s" : ""})
+                      </span>
+                      {batch.state_message && (
+                        <small className="text-danger text-truncate" style={{ maxWidth: "20rem" }} title={batch.state_message}>
+                          {batch.state_message}
+                        </small>
+                      )}
+                    </span>
+                  </ListGroup.Item>
+                ))}
+              </ListGroup>
+            </>
+          ) : (state.task_iterations?.length ?? 0) > 0 ? (
+            <>
+              <div className="small text-muted mt-2 mb-1">Batches</div>
+              <ListGroup variant="flush" className="mt-1">
+                {state.task_iterations!.map((it, displayIndex) => {
+                  const fileCount = state.batch_file_counts?.[it.index];
+                  const filesLabel =
+                    fileCount != null ? ` (${fileCount} file${fileCount !== 1 ? "s" : ""})` : "";
+                  return (
+                    <ListGroup.Item
+                      key={it.index}
+                      className="d-flex justify-content-between align-items-center px-0 py-1 border-0"
+                    >
+                      <span className="d-flex align-items-center gap-2 flex-wrap">
+                        <TaskIterationStatusBadge iteration={it} />
+                        <span className="small text-muted">
+                          Batch {displayIndex + 1}
+                          {filesLabel}
+                        </span>
+                        {it.state_message && (
+                          <small className="text-danger text-truncate" style={{ maxWidth: "20rem" }} title={it.state_message}>
+                            {it.state_message}
+                          </small>
+                        )}
+                      </span>
+                    </ListGroup.Item>
+                  );
+                })}
+              </ListGroup>
+            </>
+          ) : (state.total_iterations != null && state.total_iterations > 0) ? (
+            <>
+              <div className="small text-muted mt-2 mb-1">Batches</div>
+              <ListGroup variant="flush" className="mt-1">
+                {Array.from({ length: state.total_iterations }, (_, batchIndex) => batchIndex).map(
+                  (batchIndex, displayIndex) => {
+                    const fileCount = state.batch_file_counts?.[batchIndex];
+                    const filesLabel =
+                      fileCount != null ? ` (${fileCount} file${fileCount !== 1 ? "s" : ""})` : "";
+                    return (
+                      <ListGroup.Item
+                        key={batchIndex}
+                        className="d-flex justify-content-between align-items-center px-0 py-1 border-0"
+                      >
+                        <span className="d-flex align-items-center gap-2 flex-wrap">
+                          <Badge bg="secondary">PENDING</Badge>
+                          <span className="small text-muted">
+                            Batch {displayIndex + 1}
+                            {filesLabel}
+                          </span>
+                        </span>
+                      </ListGroup.Item>
+                    );
+                  })}
+              </ListGroup>
+            </>
+          ) : null}
+          {(!state.task_iterations?.length && state.job_run_statuses?.length && !state.total_iterations) ? (
+            <ListGroup variant="flush" className="mt-2">
+              {state.job_run_statuses!.map((job: JobRunStatus) => (
+                <ListGroup.Item
+                  key={job.run_id}
+                  className="d-flex justify-content-between align-items-center px-0 py-1 border-0"
+                >
+                  <span className="d-flex align-items-center gap-2 flex-wrap">
+                    <JobRunStatusBadge status={job.status} />
+                    {job.error && <small className="text-danger">{job.error}</small>}
+                  </span>
+                </ListGroup.Item>
+              ))}
+            </ListGroup>
+          ) : null}
         </Alert>
       )}
     </div>

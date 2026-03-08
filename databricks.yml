@@ -17,9 +17,16 @@ resources:
     sharepoint-transfer:
       name: sharepoint-transfer
       description: "Transfer large files from SharePoint to UC volumes (offloaded from app server)"
-      max_concurrent_runs: 10
+      max_concurrent_runs: 1
       # Includes time in queue (Queued/Pending) + execution. Set high so batches aren't killed while waiting.
       timeout_seconds: 10800
+      parameters:
+        - name: manifest_paths_json
+          default: ""
+        - name: scope
+          default: ""
+        - name: tokens_key
+          default: ""
       environments:
         - environment_key: default
           spec:
@@ -28,11 +35,27 @@ resources:
               - requests
               - msal
       tasks:
-        - task_key: transfer
+        - task_key: prepare_inputs
           environment_key: default
           spark_python_task:
-            python_file: ./notebooks/sharepoint_transfer.py
-            parameters: []
+            python_file: ./notebooks/prepare_manifest_inputs.py
+            parameters:
+              - "{{job.parameters.manifest_paths_json}}"
+        - task_key: for_each_transfer
+          depends_on:
+            - task_key: prepare_inputs
+          for_each_task:
+            inputs: "{{tasks.prepare_inputs.values.manifest_paths}}"
+            concurrency: 10
+            task:
+              task_key: transfer
+              environment_key: default
+              spark_python_task:
+                python_file: ./notebooks/sharepoint_transfer.py
+                parameters:
+                  - "{{job.parameters.scope}}"
+                  - "{{job.parameters.tokens_key}}"
+                  - "{{input}}"
 
   apps:
     sharepoint-to-databricks-transfer:
